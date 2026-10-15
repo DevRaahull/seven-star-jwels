@@ -163,6 +163,7 @@ ALTER TABLE items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE purchases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE purchase_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sale_payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sale_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE expenses ENABLE ROW LEVEL SECURITY;
 
@@ -171,5 +172,6 @@ CREATE POLICY "Users access own items" ON items FOR ALL USING (auth.uid() = user
 CREATE POLICY "Users access own purchases" ON purchases FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
 CREATE POLICY "Users access purchase items" ON purchase_items FOR ALL USING (EXISTS (SELECT 1 FROM purchases WHERE purchases.id = purchase_items.purchase_id AND (purchases.user_id = auth.uid() OR purchases.user_id IS NULL)));
 CREATE POLICY "Users access own sales" ON sales FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+CREATE POLICY "Users access sale payments" ON sale_payments FOR ALL USING (EXISTS (SELECT 1 FROM sales WHERE sales.id = sale_payments.sale_id AND (sales.user_id = auth.uid() OR sales.user_id IS NULL)));
 CREATE POLICY "Users access sale items" ON sale_items FOR ALL USING (EXISTS (SELECT 1 FROM sales WHERE sales.id = sale_items.sale_id AND (sales.user_id = auth.uid() OR sales.user_id IS NULL)));
 CREATE POLICY "Users access own expenses" ON expenses FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
