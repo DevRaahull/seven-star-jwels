@@ -100,19 +100,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'Invalid owner email or password. Access denied.' };
     }
 
+    let resolvedUserId = 'f3bd6db5-cd16-4828-a46c-fecd60c06970';
     const client = getSupabaseClient();
     if (client) {
       try {
-        const { error } = await client.auth.signInWithPassword({
+        const { data: signInData, error } = await client.auth.signInWithPassword({
           email: AUTHORIZED_OWNER_EMAIL,
           password: AUTHORIZED_OWNER_PASSWORD
         });
-        if (error) {
+        if (!error && signInData?.user) {
+          resolvedUserId = signInData.user.id;
+        } else if (error) {
           // If not created on Supabase yet, create account
-          await client.auth.signUp({
+          const { data: signUpData } = await client.auth.signUp({
             email: AUTHORIZED_OWNER_EMAIL,
             password: AUTHORIZED_OWNER_PASSWORD
           });
+          if (signUpData?.user) {
+            resolvedUserId = signUpData.user.id;
+          }
         }
       } catch (err: any) {
         console.warn('Supabase cloud auth notice:', err);
@@ -120,7 +126,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const ownerProfile: UserProfile = {
-      id: 'owner-ravidhika',
+      id: resolvedUserId,
       email: AUTHORIZED_OWNER_EMAIL,
       role: 'owner'
     };
