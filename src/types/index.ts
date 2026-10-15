@@ -67,8 +67,8 @@ export interface SaleItem {
   item_id?: string;
   item_name: string;
   quantity: number;
-  unit_cost: number; // Historical purchase cost snapshot
-  unit_sale_rate: number;
+  unit_cost: number; // Historical purchase cost snapshot (Weighted Average Cost at sale time)
+  unit_sale_rate: number; // Actual negotiated sale rate on this bill
   gst_rate: number; // e.g. 3% for jewellery
   taxable_amount: number;
   cgst_amount: number;
@@ -96,6 +96,9 @@ export interface Sale {
   invoice_number: string;
   sale_date: string;
   customer_name: string;
+  party_id?: string; // Optional link to registered party
+  state_id?: string; // Optional state link
+  deduct_from_party_stock?: boolean; // If sold from party's held consignment stock
   buyer_gstin?: string;
   buyer_address?: string;
   customer_phone?: string;
@@ -119,6 +122,88 @@ export interface Sale {
   updated_at: string;
   items?: SaleItem[];
   payments?: SalePayment[];
+}
+
+// --- STATES & PARTIES (MULTI-STATE MANAGEMENT) ---
+export interface StateRecord {
+  id: string;
+  user_id?: string;
+  name: string;
+  notes?: string;
+  is_archived?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PartyRecord {
+  id: string;
+  user_id?: string;
+  state_id: string;
+  name: string;
+  phone?: string;
+  notes?: string;
+  opening_balance?: number; // Positive = Party owes us (Receivable), Negative = We owe party (Payable)
+  is_archived?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StockTransfer {
+  id: string;
+  user_id?: string;
+  transfer_date: string;
+  destination_state_id: string;
+  destination_party_id: string;
+  item_id: string;
+  item_name: string;
+  quantity: number;
+  transfer_type: 'issue' | 'return'; // 'issue' = main to party, 'return' = party back to main
+  notes?: string;
+  created_at: string;
+}
+
+export interface PartyPayment {
+  id: string;
+  user_id?: string;
+  party_id: string;
+  payment_date: string;
+  amount: number;
+  payment_type: 'received' | 'paid'; // 'received' = money received from party, 'paid' = money paid to party
+  payment_method: string;
+  reference?: string;
+  notes?: string;
+  created_at: string;
+}
+
+export interface PartyStockLedgerSummary {
+  party_id: string;
+  party_name: string;
+  state_id: string;
+  state_name: string;
+  items: Array<{
+    item_id: string;
+    item_name: string;
+    issued_qty: number;
+    returned_qty: number;
+    sold_qty: number;
+    held_qty: number;
+  }>;
+  total_held_pieces: number;
+}
+
+export interface PartyMoneyLedgerSummary {
+  party_id: string;
+  party_name: string;
+  state_id: string;
+  state_name: string;
+  phone?: string;
+  opening_balance: number;
+  total_sales: number;
+  total_received: number;
+  total_paid: number;
+  net_receivable: number; // party owes us
+  net_payable: number;    // we owe party
+  net_position: number;   // >0 party owes us, <0 we owe party
 }
 
 // --- OPERATING EXPENSES ---
@@ -174,7 +259,9 @@ export interface StockMovementPeriod {
   category: string;
   opening_stock: number;
   purchased_qty: number;
+  transfers_returned_qty: number;
   sold_qty: number;
+  transfers_issued_qty: number;
   current_stock: number;
   purchase_rate: number;
   default_sale_rate: number;
@@ -190,14 +277,17 @@ export interface WholesaleDashboardStats {
   month_income: number;
   month_expenditure: number;
   month_net_result: number;
+  party_receivables_total?: number;
+  party_payables_total?: number;
 }
 
-// --- 5 MAIN NAVIGATION FEATURES ---
+// --- 6 MAIN NAVIGATION FEATURES ---
 export type ActiveNavTab =
   | 'dashboard'
   | 'create_sale'
   | 'create_purchase'
   | 'inventory'
+  | 'states_parties'
   | 'reports'
   | 'settings'
   | 'backup'

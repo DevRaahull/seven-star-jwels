@@ -157,6 +157,60 @@ CREATE TABLE IF NOT EXISTS expenses (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 8. STATES (MULTI-STATE DESTINATIONS)
+CREATE TABLE IF NOT EXISTS states (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  state_code TEXT,
+  notes TEXT,
+  is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 9. PARTIES (WHOLESALE PARTNERS PER STATE)
+CREATE TABLE IF NOT EXISTS parties (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  state_id UUID REFERENCES states(id) ON DELETE SET NULL,
+  phone TEXT,
+  notes TEXT,
+  opening_balance NUMERIC(12,2) NOT NULL DEFAULT 0,
+  is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 10. STOCK TRANSFERS (CONSIGNMENT STOCK MOVEMENT - NOT SALES)
+CREATE TABLE IF NOT EXISTS stock_transfers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  destination_party_id UUID NOT NULL REFERENCES parties(id) ON DELETE CASCADE,
+  item_id UUID NOT NULL REFERENCES items(id) ON DELETE RESTRICT,
+  item_name TEXT NOT NULL,
+  transfer_type TEXT NOT NULL CHECK (transfer_type IN ('issue', 'return')),
+  quantity NUMERIC(12,2) NOT NULL CHECK (quantity > 0),
+  transfer_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 11. PARTY PAYMENTS (FINANCIAL SETTLEMENTS)
+CREATE TABLE IF NOT EXISTS party_payments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  party_id UUID NOT NULL REFERENCES parties(id) ON DELETE CASCADE,
+  amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  payment_type TEXT NOT NULL CHECK (payment_type IN ('received', 'paid')),
+  payment_mode TEXT NOT NULL DEFAULT 'Cash' CHECK (payment_mode IN ('Cash', 'Bank Transfer', 'UPI', 'Cheque', 'Other')),
+  reference_no TEXT,
+  payment_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ROW LEVEL SECURITY (RLS)
 ALTER TABLE business_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE items ENABLE ROW LEVEL SECURITY;
@@ -166,6 +220,10 @@ ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sale_payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sale_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE states ENABLE ROW LEVEL SECURITY;
+ALTER TABLE parties ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock_transfers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE party_payments ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users access own settings" ON business_settings FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
 CREATE POLICY "Users access own items" ON items FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
@@ -175,3 +233,7 @@ CREATE POLICY "Users access own sales" ON sales FOR ALL USING (auth.uid() = user
 CREATE POLICY "Users access sale payments" ON sale_payments FOR ALL USING (EXISTS (SELECT 1 FROM sales WHERE sales.id = sale_payments.sale_id AND (sales.user_id = auth.uid() OR sales.user_id IS NULL)));
 CREATE POLICY "Users access sale items" ON sale_items FOR ALL USING (EXISTS (SELECT 1 FROM sales WHERE sales.id = sale_items.sale_id AND (sales.user_id = auth.uid() OR sales.user_id IS NULL)));
 CREATE POLICY "Users access own expenses" ON expenses FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+CREATE POLICY "Users access own states" ON states FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+CREATE POLICY "Users access own parties" ON parties FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+CREATE POLICY "Users access own stock_transfers" ON stock_transfers FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+CREATE POLICY "Users access own party_payments" ON party_payments FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);

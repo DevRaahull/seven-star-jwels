@@ -28,11 +28,19 @@ interface SaleLineDraft {
 }
 
 export const SalesEntryView: React.FC = () => {
-  const { items, settings, createSale } = useAppData();
+  const { items, states, parties, settings, createSale } = useAppData();
 
   const activeItems = useMemo(() => {
     return items.filter(i => !i.is_archived);
   }, [items]);
+
+  const activeStates = useMemo(() => {
+    return states.filter(s => !s.is_archived);
+  }, [states]);
+
+  const activeParties = useMemo(() => {
+    return parties.filter(p => !p.is_archived);
+  }, [parties]);
 
   const defaultGst = settings.default_gst_rate || 3;
 
@@ -41,10 +49,11 @@ export const SalesEntryView: React.FC = () => {
   const [invoiceNumber, setInvoiceNumber] = useState<string>(
     `${settings.invoice_prefix || 'SSJ-'}${settings.next_invoice_number || Math.floor(1000 + Math.random() * 9000)}`
   );
+  const [selectedPartyId, setSelectedPartyId] = useState<string>('');
+  const [selectedStateId, setSelectedStateId] = useState<string>('');
   const [buyerName, setBuyerName] = useState<string>('');
-  const [buyerGstin, setBuyerGstin] = useState<string>('');
-  const [buyerAddress, setBuyerAddress] = useState<string>('');
   const [customerPhone, setCustomerPhone] = useState<string>('');
+  const [deductFromPartyStock, setDeductFromPartyStock] = useState<boolean>(false);
   const [isInterstate, setIsInterstate] = useState<boolean>(false);
   const [paymentMethod, setPaymentMethod] = useState<string>('Bank Transfer / RTGS');
   const [notes, setNotes] = useState<string>('');
@@ -329,8 +338,9 @@ export const SalesEntryView: React.FC = () => {
         invoice_number: invoiceNumber.trim(),
         sale_date: new Date(saleDate).toISOString(),
         customer_name: buyerName.trim(),
-        buyer_gstin: buyerGstin.trim() || undefined,
-        buyer_address: buyerAddress.trim() || undefined,
+        party_id: selectedPartyId || undefined,
+        state_id: selectedStateId || undefined,
+        deduct_from_party_stock: deductFromPartyStock,
         customer_phone: customerPhone.trim() || undefined,
         is_interstate: isInterstate,
         payment_method: paymentMethod,
@@ -373,10 +383,11 @@ export const SalesEntryView: React.FC = () => {
       setShowPrintModal(true);
 
       // Reset for next sale
+      setSelectedPartyId('');
+      setSelectedStateId('');
       setBuyerName('');
-      setBuyerGstin('');
-      setBuyerAddress('');
       setCustomerPhone('');
+      setDeductFromPartyStock(false);
       setNotes('');
       setPaymentOption('Due Balance');
       setPaymentAmountInput('');
@@ -469,56 +480,72 @@ export const SalesEntryView: React.FC = () => {
               />
             </div>
 
+            {/* Select Registered Party or One-off */}
+            <div>
+              <label className="block text-xs font-medium text-[#D6B36A] mb-1">
+                Select Registered Party (Optional)
+              </label>
+              <select
+                value={selectedPartyId}
+                onChange={e => {
+                  const partyId = e.target.value;
+                  setSelectedPartyId(partyId);
+                  if (partyId) {
+                    const party = activeParties.find(p => p.id === partyId);
+                    if (party) {
+                      setBuyerName(party.name);
+                      setCustomerPhone(party.phone || '');
+                      setSelectedStateId(party.state_id);
+                    }
+                  } else {
+                    setSelectedStateId('');
+                    setDeductFromPartyStock(false);
+                  }
+                }}
+                className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A] transition"
+              >
+                <option value="">-- One-Off Customer / Counter Sale --</option>
+                {activeStates.map(state => {
+                  const stateParties = activeParties.filter(p => p.state_id === state.id);
+                  if (stateParties.length === 0) return null;
+                  return (
+                    <optgroup key={state.id} label={`📍 ${state.name}`}>
+                      {stateParties.map(party => (
+                        <option key={party.id} value={party.id}>
+                          {party.name} {party.phone ? `(${party.phone})` : ''}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+              </select>
+            </div>
+
+            {/* Customer / Party Name */}
             <div>
               <label className="block text-xs font-medium text-[#AAB4C5] mb-1">
-                Buyer / Party Name *
+                Customer / Party Name *
               </label>
               <input
                 type="text"
                 required
-                placeholder="e.g. Royal Jewellers / Suresh Patel"
+                placeholder="e.g. Royal Jewellers / Counter Wholesale"
                 value={buyerName}
                 onChange={e => setBuyerName(e.target.value)}
                 className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A] transition"
               />
             </div>
 
+            {/* Customer Phone (Optional) */}
             <div>
               <label className="block text-xs font-medium text-[#AAB4C5] mb-1">
-                Buyer GSTIN (Optional)
-              </label>
-              <input
-                type="text"
-                maxLength={15}
-                placeholder="27ABCDE1234F1Z5"
-                value={buyerGstin}
-                onChange={e => setBuyerGstin(e.target.value.toUpperCase())}
-                className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] font-mono uppercase focus:outline-none focus:border-[#D6B36A] transition"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-[#AAB4C5] mb-1">
-                Buyer Phone
+                Customer Phone (Optional)
               </label>
               <input
                 type="tel"
                 placeholder="+91 98765 43210"
                 value={customerPhone}
                 onChange={e => setCustomerPhone(e.target.value)}
-                className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A] transition"
-              />
-            </div>
-
-            <div className="sm:col-span-2">
-              <label className="block text-xs font-medium text-[#AAB4C5] mb-1">
-                Buyer Address / Destination
-              </label>
-              <input
-                type="text"
-                placeholder="Shop No., Market, City, State"
-                value={buyerAddress}
-                onChange={e => setBuyerAddress(e.target.value)}
                 className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A] transition"
               />
             </div>
@@ -539,6 +566,22 @@ export const SalesEntryView: React.FC = () => {
                 <option value="Credit">Credit / Account</option>
               </select>
             </div>
+
+            {/* Party Consignment Deduction Toggle (If Registered Party is Selected) */}
+            {selectedPartyId && (
+              <div className="sm:col-span-2 flex items-center gap-2 bg-[#0B1220] p-2.5 rounded-lg border border-[#D6B36A]/30">
+                <input
+                  type="checkbox"
+                  id="deductPartyStock"
+                  checked={deductFromPartyStock}
+                  onChange={e => setDeductFromPartyStock(e.target.checked)}
+                  className="w-4 h-4 rounded bg-[#111B2E] border-[#1E2B45] text-[#D6B36A] focus:ring-0"
+                />
+                <label htmlFor="deductPartyStock" className="text-xs text-[#D6B36A] cursor-pointer">
+                  <strong>Consignment Settlement:</strong> Deduct quantity from party&apos;s held stock (instead of main warehouse)
+                </label>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3 pt-2">

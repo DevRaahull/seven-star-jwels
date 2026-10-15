@@ -8,7 +8,8 @@ import {
   FileBarChart,
   Database,
   Settings,
-  X
+  X,
+  Users
 } from 'lucide-react';
 import { ActiveNavTab } from '../../types';
 import { GoldLogo } from '../common/GoldLogo';
@@ -31,6 +32,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'create_sale' as ActiveNavTab, label: 'Create Sale', icon: ShoppingCart },
     { id: 'create_purchase' as ActiveNavTab, label: 'Create Purchase', icon: ShoppingBag },
     { id: 'inventory' as ActiveNavTab, label: 'Inventory', icon: Boxes },
+    { id: 'states_parties' as ActiveNavTab, label: 'States & Parties', icon: Users },
     { id: 'reports' as ActiveNavTab, label: 'Reports', icon: FileBarChart }
   ];
 

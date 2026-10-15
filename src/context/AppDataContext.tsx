@@ -1,5 +1,19 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
-import { Item, Purchase, Sale, Expense, BusinessSettings, WholesaleDashboardStats, StockMovementPeriod } from '../types';
+import {
+  Item,
+  Purchase,
+  Sale,
+  Expense,
+  BusinessSettings,
+  WholesaleDashboardStats,
+  StockMovementPeriod,
+  StateRecord,
+  PartyRecord,
+  StockTransfer,
+  PartyPayment,
+  PartyStockLedgerSummary,
+  PartyMoneyLedgerSummary
+} from '../types';
 import { storage } from '../lib/storage';
 
 interface AppDataContextType {
@@ -7,6 +21,10 @@ interface AppDataContextType {
   purchases: Purchase[];
   sales: Sale[];
   expenses: Expense[];
+  states: StateRecord[];
+  parties: PartyRecord[];
+  stockTransfers: StockTransfer[];
+  partyPayments: PartyPayment[];
   settings: BusinessSettings;
   loading: boolean;
   isOnline: boolean;
@@ -25,6 +43,21 @@ interface AppDataContextType {
   updateSettings: (newSettings: Partial<BusinessSettings>) => Promise<BusinessSettings>;
   restoreBackup: (payload: any) => Promise<{ success: boolean; message: string }>;
   getStockMovementPeriod: (startDate: Date, endDate: Date) => Promise<StockMovementPeriod[]>;
+  saveState: (stateData: { id?: string; name: string; notes?: string }) => Promise<StateRecord>;
+  archiveState: (id: string) => Promise<void>;
+  saveParty: (partyData: { id?: string; state_id: string; name: string; phone?: string; notes?: string; opening_balance?: number }) => Promise<PartyRecord>;
+  archiveParty: (id: string) => Promise<void>;
+  createStockTransfer: (data: { transfer_date?: string; destination_state_id: string; destination_party_id: string; item_id: string; quantity: number; transfer_type: 'issue' | 'return'; notes?: string }) => Promise<StockTransfer>;
+  recordPartyPayment: (data: { party_id: string; payment_date?: string; amount: number; payment_type: 'received' | 'paid'; payment_method?: string; reference?: string; notes?: string }) => Promise<PartyPayment>;
+  getPartyLedger: (partyId: string) => Promise<{
+    party: PartyRecord;
+    state?: StateRecord;
+    stockSummary: PartyStockLedgerSummary;
+    moneySummary: PartyMoneyLedgerSummary;
+    transfers: StockTransfer[];
+    sales: Sale[];
+    payments: PartyPayment[];
+  }>;
 }
 
 const AppDataContext = createContext<AppDataContextType | undefined>(undefined);
@@ -34,6 +67,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [states, setStates] = useState<StateRecord[]>([]);
+  const [parties, setParties] = useState<PartyRecord[]>([]);
+  const [stockTransfers, setStockTransfers] = useState<StockTransfer[]>([]);
+  const [partyPayments, setPartyPayments] = useState<PartyPayment[]>([]);
   const [settings, setSettings] = useState<BusinessSettings>({} as BusinessSettings);
   const [loading, setLoading] = useState<boolean>(true);
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
@@ -52,18 +89,36 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const refreshData = useCallback(async () => {
     setLoading(true);
     try {
-      const [fetchedSettings, fetchedItems, fetchedPurchases, fetchedSales, fetchedExpenses] = await Promise.all([
+      const [
+        fetchedSettings,
+        fetchedItems,
+        fetchedPurchases,
+        fetchedSales,
+        fetchedExpenses,
+        fetchedStates,
+        fetchedParties,
+        fetchedTransfers,
+        fetchedPartyPayments
+      ] = await Promise.all([
         storage.getSettings(),
         storage.getItems(),
         storage.getPurchases(),
         storage.getSales(),
-        storage.getExpenses()
+        storage.getExpenses(),
+        storage.getStates(),
+        storage.getParties(),
+        storage.getStockTransfers(),
+        storage.getPartyPayments()
       ]);
       setSettings(fetchedSettings);
       setItems(fetchedItems);
       setPurchases(fetchedPurchases);
       setSales(fetchedSales);
       setExpenses(fetchedExpenses);
+      setStates(fetchedStates);
+      setParties(fetchedParties);
+      setStockTransfers(fetchedTransfers);
+      setPartyPayments(fetchedPartyPayments);
     } catch (e) {
       console.error('Failed to load application data:', e);
     } finally {
@@ -120,6 +175,22 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const stockUnits = activeItems.reduce((sum, i) => sum + i.current_stock, 0);
     const stockValue = activeItems.reduce((sum, i) => sum + (i.current_stock * i.purchase_rate), 0);
 
+    let partyReceivablesTotal = 0;
+    let partyPayablesTotal = 0;
+    parties.filter(p => !p.is_archived).forEach(p => {
+      const pSales = sales.filter(s => s.party_id === p.id && s.status === 'completed');
+      const pPayments = partyPayments.filter(pay => pay.party_id === p.id);
+      const opening = Number(p.opening_balance) || 0;
+      const salesTotal = pSales.reduce((sum, s) => sum + s.grand_total, 0);
+      const received =
+        pSales.reduce((sum, s) => sum + (s.amount_received || 0), 0) +
+        pPayments.filter(pay => pay.payment_type === 'received').reduce((sum, pay) => sum + pay.amount, 0);
+      const paid = pPayments.filter(pay => pay.payment_type === 'paid').reduce((sum, pay) => sum + pay.amount, 0);
+      const pos = opening + salesTotal + paid - received;
+      if (pos > 0) partyReceivablesTotal += pos;
+      else if (pos < 0) partyPayablesTotal += Math.abs(pos);
+    });
+
     return {
       month_sales: monthSales,
       month_purchases: monthPurchases,
@@ -127,9 +198,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       current_stock_value: stockValue,
       month_income: monthIncome,
       month_expenditure: monthExpenditure,
-      month_net_result: monthNetResult
+      month_net_result: monthNetResult,
+      party_receivables_total: Math.round(partyReceivablesTotal * 100) / 100,
+      party_payables_total: Math.round(partyPayablesTotal * 100) / 100
     };
-  }, [sales, purchases, items, expenses]);
+  }, [sales, purchases, items, expenses, parties, partyPayments]);
 
   const createPurchase = async (purchaseData: any, itemsData: any[]) => {
     const created = await storage.createPurchase(purchaseData, itemsData);
@@ -209,6 +282,67 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return await storage.getStockMovementPeriod(startDate, endDate);
   };
 
+  const saveState = async (stateData: { id?: string; name: string; notes?: string }) => {
+    const saved = await storage.saveState(stateData);
+    await refreshData();
+    return saved;
+  };
+
+  const archiveState = async (id: string) => {
+    await storage.archiveState(id);
+    await refreshData();
+  };
+
+  const saveParty = async (partyData: {
+    id?: string;
+    state_id: string;
+    name: string;
+    phone?: string;
+    notes?: string;
+    opening_balance?: number;
+  }) => {
+    const saved = await storage.saveParty(partyData);
+    await refreshData();
+    return saved;
+  };
+
+  const archiveParty = async (id: string) => {
+    await storage.archiveParty(id);
+    await refreshData();
+  };
+
+  const createStockTransfer = async (data: {
+    transfer_date?: string;
+    destination_state_id: string;
+    destination_party_id: string;
+    item_id: string;
+    quantity: number;
+    transfer_type: 'issue' | 'return';
+    notes?: string;
+  }) => {
+    const created = await storage.createStockTransfer(data);
+    await refreshData();
+    return created;
+  };
+
+  const recordPartyPayment = async (data: {
+    party_id: string;
+    payment_date?: string;
+    amount: number;
+    payment_type: 'received' | 'paid';
+    payment_method?: string;
+    reference?: string;
+    notes?: string;
+  }) => {
+    const recorded = await storage.recordPartyPayment(data);
+    await refreshData();
+    return recorded;
+  };
+
+  const getPartyLedger = async (partyId: string) => {
+    return await storage.getPartyLedger(partyId);
+  };
+
   return (
     <AppDataContext.Provider
       value={{
@@ -216,6 +350,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         purchases,
         sales,
         expenses,
+        states,
+        parties,
+        stockTransfers,
+        partyPayments,
         settings,
         loading,
         isOnline,
@@ -233,7 +371,14 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         deleteExpense,
         updateSettings,
         restoreBackup,
-        getStockMovementPeriod
+        getStockMovementPeriod,
+        saveState,
+        archiveState,
+        saveParty,
+        archiveParty,
+        createStockTransfer,
+        recordPartyPayment,
+        getPartyLedger
       }}
     >
       {children}

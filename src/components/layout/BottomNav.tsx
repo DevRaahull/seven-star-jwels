@@ -4,7 +4,8 @@ import {
   ShoppingCart,
   ShoppingBag,
   Boxes,
-  FileBarChart
+  FileBarChart,
+  Users
 } from 'lucide-react';
 import { ActiveNavTab } from '../../types';
 
@@ -19,6 +20,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, setActiveTab })
     { id: 'create_sale' as ActiveNavTab, label: 'Sale', icon: ShoppingCart },
     { id: 'create_purchase' as ActiveNavTab, label: 'Purchase', icon: ShoppingBag },
     { id: 'inventory' as ActiveNavTab, label: 'Stock', icon: Boxes },
+    { id: 'states_parties' as ActiveNavTab, label: 'Parties', icon: Users },
     { id: 'reports' as ActiveNavTab, label: 'Reports', icon: FileBarChart }
   ];
 

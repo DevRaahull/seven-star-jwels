@@ -9,6 +9,7 @@ import { DashboardView } from './components/dashboard/DashboardView';
 import { PurchaseEntryView } from './components/purchases/PurchaseEntryView';
 import { SalesEntryView } from './components/sales/SalesEntryView';
 import { InventoryView } from './components/inventory/InventoryView';
+import { StatesPartiesView } from './components/parties/StatesPartiesView';
 import { InvoicesListView } from './components/invoices/InvoicesListView';
 import { AccountsReportsView } from './components/accounts/AccountsReportsView';
 import { BackupRestoreView } from './components/backup/BackupRestoreView';
@@ -83,6 +84,10 @@ const MainAppContent: React.FC = () => {
 
             {activeTab === 'inventory' && (
               <InventoryView />
+            )}
+
+            {activeTab === 'states_parties' && (
+              <StatesPartiesView />
             )}
 
             {(activeTab === 'reports' || activeTab === 'accounts') && (

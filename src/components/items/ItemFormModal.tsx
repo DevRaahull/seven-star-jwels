@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Plus, Package, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { Item } from '../../types';
 import { useAppData } from '../../context/AppDataContext';
@@ -72,25 +72,25 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ itemToEdit, onClos
       return;
     }
 
-    const pRate = parseFloat(purchaseRate);
+    const pRate = purchaseRate.trim() ? parseFloat(purchaseRate) : 0;
     if (isNaN(pRate) || pRate < 0) {
       setErrorMessage('Purchase Rate per Unit must be a non-negative number.');
       return;
     }
 
-    const sRate = parseFloat(defaultSaleRate);
+    const sRate = defaultSaleRate.trim() ? parseFloat(defaultSaleRate) : 0;
     if (isNaN(sRate) || sRate < 0) {
       setErrorMessage('Default Sale Rate per Unit must be a non-negative number.');
       return;
     }
 
-    const stock = parseFloat(openingStock);
+    const stock = openingStock.trim() ? parseFloat(openingStock) : 0;
     if (isNaN(stock) || stock < 0) {
       setErrorMessage('Stock quantity must be a non-negative number.');
       return;
     }
 
-    const threshold = parseFloat(lowStockThreshold);
+    const threshold = lowStockThreshold.trim() ? parseFloat(lowStockThreshold) : 5;
     if (isNaN(threshold) || threshold < 0) {
       setErrorMessage('Low-Stock Threshold must be 0 or greater.');
       return;
@@ -113,10 +113,11 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ itemToEdit, onClos
         id: itemToEdit?.id,
         name: name.trim(),
         sku: sku.trim() || undefined,
-        category,
+        category: category || 'General',
         purchase_rate: pRate,
         default_sale_rate: sRate,
         current_stock: stock,
+        opening_stock: stock,
         low_stock_threshold: threshold,
         description: description.trim() || undefined,
         is_archived: itemToEdit?.is_archived || false
@@ -136,9 +137,12 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ itemToEdit, onClos
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#1E2B45]">
           <div className="flex items-center gap-2.5">
             <Package size={20} className="text-[#D6B36A]" />
-            <h3 className="font-semibold text-base text-[#F5F3EE]">
-              {isEditing ? 'Edit Inventory Item' : 'Add New Inventory Item'}
-            </h3>
+            <div>
+              <h3 className="font-semibold text-base text-[#F5F3EE]">
+                {isEditing ? 'Edit Inventory Item' : 'Add New Inventory Item'}
+              </h3>
+              <p className="text-[11px] text-[#AAB4C5]">Only Item Name is required</p>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -157,19 +161,24 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ itemToEdit, onClos
             </div>
           )}
 
+          <div className="p-2.5 bg-[#D6B36A]/10 border border-[#D6B36A]/20 rounded-xl text-[#D6B36A] text-[11px]">
+            💡 <strong>Quick Creation:</strong> Just type the <strong>Item Name</strong> and tap Save. Rates and stock can be entered now or customized directly on each purchase/sales bill.
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Item Name (Required) */}
             <div className="md:col-span-2">
-              <label className="block text-xs font-medium text-[#AAB4C5] mb-1">
-                Item Name *
+              <label className="block text-xs font-semibold text-[#D6B36A] mb-1">
+                Item Name * (Required)
               </label>
               <input
                 type="text"
                 required
+                autoFocus
                 placeholder="e.g. Stone Nose Pin, 92.5 Silver Ring..."
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A] transition"
+                className="w-full bg-[#0B1220] border-2 border-[#D6B36A]/50 focus:border-[#D6B36A] rounded-lg px-3 py-2 text-sm text-[#F5F3EE] focus:outline-none transition shadow-inner"
               />
             </div>
 
@@ -190,7 +199,7 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ itemToEdit, onClos
             {/* Category */}
             <div>
               <label className="block text-xs font-medium text-[#AAB4C5] mb-1">
-                Category
+                Category (Optional)
               </label>
               <select
                 value={category}
@@ -203,64 +212,61 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ itemToEdit, onClos
               </select>
             </div>
 
-            {/* Purchase Rate per Unit (Required) */}
+            {/* Purchase Rate per Unit (Optional) */}
             <div>
               <label className="block text-xs font-medium text-[#AAB4C5] mb-1">
-                Purchase Rate per Unit (₹) *
+                Purchase Rate per Unit (₹) (Optional)
               </label>
               <input
                 type="number"
                 min="0"
                 step="0.01"
-                required
-                placeholder="0.00"
+                placeholder="0.00 (Optional)"
                 value={purchaseRate}
                 onChange={(e) => setPurchaseRate(e.target.value)}
                 className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] font-mono focus:outline-none focus:border-[#D6B36A] transition"
               />
-              <span className="text-[10px] text-[#7A8699]">Your cost per piece / gram</span>
+              <span className="text-[10px] text-[#7A8699]">Cost per unit. Default is ₹0</span>
             </div>
 
-            {/* Default Sale Rate per Unit (Required) */}
+            {/* Default Sale Rate per Unit (Optional) */}
             <div>
               <label className="block text-xs font-medium text-[#AAB4C5] mb-1">
-                Default Sale Rate per Unit (₹) *
+                Default Sale Rate per Unit (₹) (Optional)
               </label>
               <input
                 type="number"
                 min="0"
                 step="0.01"
-                required
-                placeholder="0.00"
+                placeholder="0.00 (Optional)"
                 value={defaultSaleRate}
                 onChange={(e) => setDefaultSaleRate(e.target.value)}
                 className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] font-mono focus:outline-none focus:border-[#D6B36A] transition"
               />
-              <span className="text-[10px] text-[#7A8699]">Standard customer price (editable in sales)</span>
+              <span className="text-[10px] text-[#7A8699]">Standard price. Default is ₹0</span>
             </div>
 
-            {/* Opening Stock Quantity (Required) */}
+            {/* Opening Stock Quantity (Optional) */}
             <div>
               <label className="block text-xs font-medium text-[#AAB4C5] mb-1">
-                {isEditing ? 'Current Stock Quantity *' : 'Opening Stock Quantity *'}
+                {isEditing ? 'Current Stock Quantity' : 'Opening Stock Quantity (Optional)'}
               </label>
               <input
                 type="number"
                 min="0"
                 step="1"
-                required
-                placeholder="0"
+                placeholder="0 (Optional)"
                 value={openingStock}
                 onChange={(e) => setOpeningStock(e.target.value)}
                 className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] font-mono focus:outline-none focus:border-[#D6B36A] transition"
               />
-              <span className="text-[10px] text-[#7A8699]">Pieces in hand</span>
+              <span className="text-[10px] text-[#7A8699]">Default is 0 pieces</span>
             </div>
 
             {/* Low-Stock Threshold */}
             <div>
               <label className="block text-xs font-medium text-[#AAB4C5] mb-1">
-                Low-Stock Threshold Alert
+                Low-Stock Threshold Alert (Optional)
               </label>
               <input
                 type="number"
@@ -271,7 +277,7 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ itemToEdit, onClos
                 onChange={(e) => setLowStockThreshold(e.target.value)}
                 className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] font-mono focus:outline-none focus:border-[#D6B36A] transition"
               />
-              <span className="text-[10px] text-[#7A8699]">Alerts when stock drops to or below this</span>
+              <span className="text-[10px] text-[#7A8699]">Default is 5 pieces</span>
             </div>
 
             {/* Description */}

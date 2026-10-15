@@ -1,12 +1,31 @@
 import { getSupabaseClient } from './supabase';
-import { Item, Sale, SaleItem, Purchase, PurchaseItem, Expense, BusinessSettings, StockMovementPeriod } from '../types';
+import {
+  Item,
+  Sale,
+  SaleItem,
+  Purchase,
+  PurchaseItem,
+  Expense,
+  BusinessSettings,
+  StockMovementPeriod,
+  StateRecord,
+  PartyRecord,
+  StockTransfer,
+  PartyPayment,
+  PartyStockLedgerSummary,
+  PartyMoneyLedgerSummary
+} from '../types';
 
 const STORAGE_KEYS = {
   SETTINGS: 'SSJ_SETTINGS',
   ITEMS: 'SSJ_ITEMS',
   PURCHASES: 'SSJ_PURCHASES',
   SALES: 'SSJ_SALES',
-  EXPENSES: 'SSJ_EXPENSES'
+  EXPENSES: 'SSJ_EXPENSES',
+  STATES: 'SSJ_STATES',
+  PARTIES: 'SSJ_PARTIES',
+  STOCK_TRANSFERS: 'SSJ_STOCK_TRANSFERS',
+  PARTY_PAYMENTS: 'SSJ_PARTY_PAYMENTS'
 };
 
 const DEFAULT_SETTINGS: BusinessSettings = {
@@ -286,6 +305,58 @@ const INITIAL_SEED_EXPENSES: Expense[] = [
   }
 ];
 
+const INITIAL_SEED_STATES: StateRecord[] = [
+  {
+    id: 'state-1',
+    name: 'Maharashtra',
+    notes: 'Headquarters & local wholesale market',
+    is_archived: false,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z'
+  },
+  {
+    id: 'state-2',
+    name: 'Gujarat',
+    notes: 'Surat & Ahmedabad retail & wholesale counters',
+    is_archived: false,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z'
+  },
+  {
+    id: 'state-3',
+    name: 'Rajasthan',
+    notes: 'Jaipur artisanal wholesale network',
+    is_archived: false,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z'
+  }
+];
+
+const INITIAL_SEED_PARTIES: PartyRecord[] = [
+  {
+    id: 'party-1',
+    state_id: 'state-1',
+    name: 'Kothari Jewellers Pune',
+    phone: '9820011223',
+    notes: 'Primary wholesale dealer in Pune',
+    opening_balance: 0,
+    is_archived: false,
+    created_at: '2026-02-01T00:00:00Z',
+    updated_at: '2026-02-01T00:00:00Z'
+  },
+  {
+    id: 'party-2',
+    state_id: 'state-2',
+    name: 'Ambika Silver Art Surat',
+    phone: '9819988776',
+    notes: 'Silver ornament consignment counter Surat',
+    opening_balance: 0,
+    is_archived: false,
+    created_at: '2026-02-01T00:00:00Z',
+    updated_at: '2026-02-01T00:00:00Z'
+  }
+];
+
 class StorageService {
   private isBrowser = typeof window !== 'undefined';
 
@@ -344,7 +415,10 @@ class StorageService {
     return local;
   }
 
-  async saveItem(itemData: Omit<Item, 'id' | 'created_at' | 'updated_at'> & { id?: string }): Promise<Item> {
+  async saveItem(itemData: Partial<Item> & { name: string }): Promise<Item> {
+    if (!itemData.name || !itemData.name.trim()) {
+      throw new Error('Item name is required and cannot be empty.');
+    }
     const client = getSupabaseClient();
     const now = new Date().toISOString();
     const id = itemData.id || `item-${Date.now()}`;
@@ -353,15 +427,15 @@ class StorageService {
       id,
       name: itemData.name.trim(),
       sku: itemData.sku?.trim() || undefined,
-      category: itemData.category || 'General',
+      category: itemData.category?.trim() || 'General',
       purchase_rate: Number(itemData.purchase_rate) || 0,
       default_sale_rate: Number(itemData.default_sale_rate) || 0,
       current_stock: Number(itemData.current_stock) || 0,
       opening_stock: Number(itemData.opening_stock) || 0,
-      low_stock_threshold: Number(itemData.low_stock_threshold) ?? 5,
-      description: itemData.description || '',
+      low_stock_threshold: itemData.low_stock_threshold !== undefined ? Number(itemData.low_stock_threshold) : 5,
+      description: itemData.description?.trim() || '',
       is_archived: itemData.is_archived || false,
-      created_at: now,
+      created_at: itemData.created_at || now,
       updated_at: now
     };
 
@@ -485,9 +559,15 @@ class StorageService {
         };
         allItems.push(matchedItem);
       } else {
-        // Increase existing stock & update latest purchase rate
+        // Weighted Average Costing (WAC)
+        const currentStock = Math.max(0, matchedItem.current_stock);
+        const currentRate = Number(matchedItem.purchase_rate) || 0;
+        let newWeightedCost = rate;
+        if (currentStock > 0) {
+          newWeightedCost = ((currentStock * currentRate) + (qty * rate)) / (currentStock + qty);
+        }
+        matchedItem.purchase_rate = Math.round(newWeightedCost * 100) / 100;
         matchedItem.current_stock += qty;
-        matchedItem.purchase_rate = rate;
         matchedItem.updated_at = now;
       }
 
@@ -628,6 +708,9 @@ class StorageService {
       sale_date: string;
       invoice_number: string;
       customer_name: string;
+      party_id?: string;
+      state_id?: string;
+      deduct_from_party_stock?: boolean;
       buyer_gstin?: string;
       buyer_address?: string;
       customer_phone?: string;
@@ -653,11 +736,42 @@ class StorageService {
     const itemMap = new Map(allItems.map(i => [i.id, i]));
 
     // Step 1: Validate stock
-    for (const line of itemsData) {
-      const item = itemMap.get(line.item_id);
-      if (!item) throw new Error(`Item "${line.item_name}" not found in inventory.`);
-      if (item.current_stock < line.quantity) {
-        throw new Error(`Insufficient stock for "${item.name}". Available: ${item.current_stock}, Requested: ${line.quantity}.`);
+    const isFromPartyStock = Boolean(saleData.deduct_from_party_stock && saleData.party_id);
+    if (isFromPartyStock) {
+      // Validate that party has enough stock for each item
+      const partyTransfers = (await this.getStockTransfers()).filter(t => t.destination_party_id === saleData.party_id);
+      const existingSales = (await this.getSales()).filter(s => s.party_id === saleData.party_id && s.deduct_from_party_stock && s.status === 'completed');
+
+      for (const line of itemsData) {
+        let issued = 0;
+        let returned = 0;
+        let alreadySold = 0;
+
+        partyTransfers.forEach(t => {
+          if (t.item_id === line.item_id) {
+            if (t.transfer_type === 'issue') issued += t.quantity;
+            else returned += t.quantity;
+          }
+        });
+
+        existingSales.forEach(s => {
+          s.items?.forEach(si => {
+            if (si.item_id === line.item_id) alreadySold += si.quantity;
+          });
+        });
+
+        const partyHeldStock = Math.max(0, issued - returned - alreadySold);
+        if (partyHeldStock < line.quantity) {
+          throw new Error(`Insufficient stock held by party for "${line.item_name}". Party has: ${partyHeldStock}, Requested: ${line.quantity}.`);
+        }
+      }
+    } else {
+      for (const line of itemsData) {
+        const item = itemMap.get(line.item_id);
+        if (!item) throw new Error(`Item "${line.item_name}" not found in inventory.`);
+        if (item.current_stock < line.quantity) {
+          throw new Error(`Insufficient stock for "${item.name}". Available: ${item.current_stock}, Requested: ${line.quantity}.`);
+        }
       }
     }
 
@@ -674,7 +788,11 @@ class StorageService {
     const isInterstate = !!saleData.is_interstate;
 
     const saleLines: SaleItem[] = itemsData.map((line, idx) => {
-      const item = itemMap.get(line.item_id)!;
+      const item = itemMap.get(line.item_id) || {
+        id: line.item_id,
+        name: line.item_name,
+        purchase_rate: 0
+      } as Item;
       const gstRate = Number(line.gst_rate ?? 3.00);
       const lineTaxable = Math.round(line.quantity * line.unit_sale_rate * 100) / 100;
 
@@ -696,7 +814,9 @@ class StorageService {
       }
 
       const lineTotal = Math.round((lineTaxable + lineGst) * 100) / 100;
-      const lineCost = Math.round(line.quantity * item.purchase_rate * 100) / 100;
+      // Snapshot unit cost at time of sale
+      const unitCost = Number(item.purchase_rate) || 0;
+      const lineCost = Math.round(line.quantity * unitCost * 100) / 100;
       const lineProfit = Math.round((lineTaxable - lineCost) * 100) / 100;
 
       totalTaxable += lineTaxable;
@@ -709,7 +829,7 @@ class StorageService {
         item_id: item.id,
         item_name: item.name,
         quantity: line.quantity,
-        unit_cost: item.purchase_rate,
+        unit_cost: unitCost,
         unit_sale_rate: line.unit_sale_rate,
         gst_rate: gstRate,
         taxable_amount: lineTaxable,
@@ -748,11 +868,15 @@ class StorageService {
       paymentStatus = 'Due Balance';
     }
 
-    // Step 2: Deduct stock atomically
-    for (const line of itemsData) {
-      const item = itemMap.get(line.item_id)!;
-      item.current_stock -= line.quantity;
-      item.updated_at = now;
+    // Step 2: Deduct stock from main warehouse ONLY if not sold from party held consignment stock
+    if (!isFromPartyStock) {
+      for (const line of itemsData) {
+        const item = itemMap.get(line.item_id);
+        if (item) {
+          item.current_stock -= line.quantity;
+          item.updated_at = now;
+        }
+      }
     }
 
     // Create initial payment record if amountReceived > 0
@@ -774,6 +898,9 @@ class StorageService {
       invoice_number: saleData.invoice_number,
       sale_date: saleData.sale_date,
       customer_name: saleData.customer_name.trim(),
+      party_id: saleData.party_id || undefined,
+      state_id: saleData.state_id || undefined,
+      deduct_from_party_stock: isFromPartyStock,
       buyer_gstin: saleData.buyer_gstin?.trim() || undefined,
       buyer_address: saleData.buyer_address?.trim() || undefined,
       customer_phone: saleData.customer_phone?.trim() || undefined,
@@ -996,10 +1123,13 @@ class StorageService {
     const items = await this.getItems();
     const purchases = await this.getPurchases();
     const sales = await this.getSales();
+    const transfers = await this.getStockTransfers();
 
     return items.map(item => {
       let purchasedInPeriod = 0;
       let soldInPeriod = 0;
+      let transfersIssuedInPeriod = 0;
+      let transfersReturnedInPeriod = 0;
 
       purchases.forEach(p => {
         if (p.status !== 'active') return;
@@ -1019,9 +1149,25 @@ class StorageService {
         if (sDate >= startDate && sDate <= endDate) {
           s.items?.forEach(line => {
             if (line.item_id === item.id || line.item_name.toLowerCase() === item.name.toLowerCase()) {
-              soldInPeriod += line.quantity;
+              // Only counts toward main warehouse outward if not sold from party held consignment stock
+              if (!s.deduct_from_party_stock) {
+                soldInPeriod += line.quantity;
+              }
             }
           });
+        }
+      });
+
+      transfers.forEach(t => {
+        if (t.item_id === item.id) {
+          const tDate = new Date(t.transfer_date);
+          if (tDate >= startDate && tDate <= endDate) {
+            if (t.transfer_type === 'issue') {
+              transfersIssuedInPeriod += t.quantity;
+            } else {
+              transfersReturnedInPeriod += t.quantity;
+            }
+          }
         }
       });
 
@@ -1035,13 +1181,397 @@ class StorageService {
         category: item.category,
         opening_stock: openingStock,
         purchased_qty: purchasedInPeriod,
+        transfers_returned_qty: transfersReturnedInPeriod,
         sold_qty: soldInPeriod,
+        transfers_issued_qty: transfersIssuedInPeriod,
         current_stock: currentStock,
         purchase_rate: item.purchase_rate,
         default_sale_rate: item.default_sale_rate,
         stock_value: stockValuation
       };
     });
+  }
+
+  // --- STATES & PARTIES (MULTI-STATE MANAGEMENT) ---
+  async getStates(): Promise<StateRecord[]> {
+    const client = getSupabaseClient();
+    if (client) {
+      const { data } = await client.from('states').select('*').order('name', { ascending: true });
+      if (data && data.length > 0) return data;
+    }
+    let local = this.getFromLocal<StateRecord[] | null>(STORAGE_KEYS.STATES, null);
+    if (!local) {
+      local = INITIAL_SEED_STATES;
+      this.saveToLocal(STORAGE_KEYS.STATES, local);
+    }
+    return local;
+  }
+
+  async saveState(stateData: { id?: string; name: string; notes?: string }): Promise<StateRecord> {
+    const name = stateData.name.trim();
+    if (!name) throw new Error('State name is required.');
+    const states = await this.getStates();
+    const existing = states.find(
+      s => s.name.toLowerCase() === name.toLowerCase() && s.id !== stateData.id && !s.is_archived
+    );
+    if (existing) {
+      throw new Error(`State "${name}" already exists.`);
+    }
+
+    const now = new Date().toISOString();
+    const id = stateData.id || `state-${Date.now()}`;
+    const record: StateRecord = {
+      id,
+      name,
+      notes: stateData.notes?.trim() || undefined,
+      is_archived: false,
+      created_at: now,
+      updated_at: now
+    };
+
+    const index = states.findIndex(s => s.id === id);
+    if (index >= 0) {
+      states[index] = { ...states[index], ...record, updated_at: now };
+    } else {
+      states.push(record);
+    }
+    this.saveToLocal(STORAGE_KEYS.STATES, states);
+
+    const client = getSupabaseClient();
+    if (client) await client.from('states').upsert(record);
+    return record;
+  }
+
+  async archiveState(id: string): Promise<void> {
+    const states = await this.getStates();
+    const index = states.findIndex(s => s.id === id);
+    if (index >= 0) {
+      states[index].is_archived = true;
+      states[index].updated_at = new Date().toISOString();
+      this.saveToLocal(STORAGE_KEYS.STATES, states);
+      const client = getSupabaseClient();
+      if (client) await client.from('states').update({ is_archived: true }).eq('id', id);
+    }
+  }
+
+  async getParties(): Promise<PartyRecord[]> {
+    const client = getSupabaseClient();
+    if (client) {
+      const { data } = await client.from('parties').select('*').order('name', { ascending: true });
+      if (data && data.length > 0) return data;
+    }
+    let local = this.getFromLocal<PartyRecord[] | null>(STORAGE_KEYS.PARTIES, null);
+    if (!local) {
+      local = INITIAL_SEED_PARTIES;
+      this.saveToLocal(STORAGE_KEYS.PARTIES, local);
+    }
+    return local;
+  }
+
+  async saveParty(partyData: {
+    id?: string;
+    state_id: string;
+    name: string;
+    phone?: string;
+    notes?: string;
+    opening_balance?: number;
+  }): Promise<PartyRecord> {
+    const name = partyData.name.trim();
+    if (!name) throw new Error('Party name is required.');
+    if (!partyData.state_id) throw new Error('State is required for party.');
+
+    const parties = await this.getParties();
+    const now = new Date().toISOString();
+    const id = partyData.id || `party-${Date.now()}`;
+    const record: PartyRecord = {
+      id,
+      state_id: partyData.state_id,
+      name,
+      phone: partyData.phone?.trim() || undefined,
+      notes: partyData.notes?.trim() || undefined,
+      opening_balance: Number(partyData.opening_balance) || 0,
+      is_archived: false,
+      created_at: now,
+      updated_at: now
+    };
+
+    const index = parties.findIndex(p => p.id === id);
+    if (index >= 0) {
+      parties[index] = { ...parties[index], ...record, updated_at: now };
+    } else {
+      parties.push(record);
+    }
+    this.saveToLocal(STORAGE_KEYS.PARTIES, parties);
+
+    const client = getSupabaseClient();
+    if (client) await client.from('parties').upsert(record);
+    return record;
+  }
+
+  async archiveParty(id: string): Promise<void> {
+    const parties = await this.getParties();
+    const index = parties.findIndex(p => p.id === id);
+    if (index >= 0) {
+      parties[index].is_archived = true;
+      parties[index].updated_at = new Date().toISOString();
+      this.saveToLocal(STORAGE_KEYS.PARTIES, parties);
+      const client = getSupabaseClient();
+      if (client) await client.from('parties').update({ is_archived: true }).eq('id', id);
+    }
+  }
+
+  // --- STOCK TRANSFERS & RETURNS ---
+  async getStockTransfers(): Promise<StockTransfer[]> {
+    const client = getSupabaseClient();
+    if (client) {
+      const { data } = await client.from('stock_transfers').select('*').order('transfer_date', { ascending: false });
+      if (data) return data;
+    }
+    return this.getFromLocal<StockTransfer[]>(STORAGE_KEYS.STOCK_TRANSFERS, []);
+  }
+
+  async createStockTransfer(data: {
+    transfer_date?: string;
+    destination_state_id: string;
+    destination_party_id: string;
+    item_id: string;
+    quantity: number;
+    transfer_type: 'issue' | 'return';
+    notes?: string;
+  }): Promise<StockTransfer> {
+    const qty = Number(data.quantity);
+    if (isNaN(qty) || qty <= 0) {
+      throw new Error('Transfer quantity must be greater than zero.');
+    }
+
+    const items = await this.getItems();
+    const item = items.find(i => i.id === data.item_id);
+    if (!item) throw new Error('Selected item not found.');
+
+    const now = new Date().toISOString();
+
+    if (data.transfer_type === 'issue') {
+      if (item.current_stock < qty) {
+        throw new Error(
+          `Insufficient main warehouse stock for "${item.name}". Available: ${item.current_stock}, Requested: ${qty}`
+        );
+      }
+      // Decreases main warehouse inventory
+      item.current_stock -= qty;
+      item.updated_at = now;
+    } else {
+      // Returns increase main warehouse inventory
+      item.current_stock += qty;
+      item.updated_at = now;
+    }
+
+    const transferId = `trans-${Date.now()}`;
+    const transferRecord: StockTransfer = {
+      id: transferId,
+      transfer_date: data.transfer_date || now,
+      destination_state_id: data.destination_state_id,
+      destination_party_id: data.destination_party_id,
+      item_id: item.id,
+      item_name: item.name,
+      quantity: qty,
+      transfer_type: data.transfer_type,
+      notes: data.notes?.trim() || undefined,
+      created_at: now
+    };
+
+    const transfers = await this.getStockTransfers();
+    transfers.unshift(transferRecord);
+    this.saveToLocal(STORAGE_KEYS.STOCK_TRANSFERS, transfers);
+    this.saveToLocal(STORAGE_KEYS.ITEMS, items);
+
+    const client = getSupabaseClient();
+    if (client) {
+      await client.from('stock_transfers').insert(transferRecord);
+      await client.from('items').upsert(items);
+    }
+
+    return transferRecord;
+  }
+
+  // --- PARTY PAYMENTS ---
+  async getPartyPayments(): Promise<PartyPayment[]> {
+    const client = getSupabaseClient();
+    if (client) {
+      const { data } = await client.from('party_payments').select('*').order('payment_date', { ascending: false });
+      if (data) return data;
+    }
+    return this.getFromLocal<PartyPayment[]>(STORAGE_KEYS.PARTY_PAYMENTS, []);
+  }
+
+  async recordPartyPayment(data: {
+    party_id: string;
+    payment_date?: string;
+    amount: number;
+    payment_type: 'received' | 'paid';
+    payment_method?: string;
+    reference?: string;
+    notes?: string;
+  }): Promise<PartyPayment> {
+    const amt = Number(data.amount);
+    if (isNaN(amt) || amt <= 0) {
+      throw new Error('Payment amount must be greater than zero.');
+    }
+
+    const now = new Date().toISOString();
+    const paymentRecord: PartyPayment = {
+      id: `ppay-${Date.now()}`,
+      party_id: data.party_id,
+      payment_date: data.payment_date || now,
+      amount: amt,
+      payment_type: data.payment_type,
+      payment_method: data.payment_method || 'Cash',
+      reference: data.reference?.trim() || undefined,
+      notes: data.notes?.trim() || undefined,
+      created_at: now
+    };
+
+    const payments = await this.getPartyPayments();
+    payments.unshift(paymentRecord);
+    this.saveToLocal(STORAGE_KEYS.PARTY_PAYMENTS, payments);
+
+    const client = getSupabaseClient();
+    if (client) {
+      await client.from('party_payments').insert(paymentRecord);
+    }
+
+    return paymentRecord;
+  }
+
+  // --- DUAL PARTY LEDGER COMPUTATION ---
+  async getPartyLedger(partyId: string): Promise<{
+    party: PartyRecord;
+    state?: StateRecord;
+    stockSummary: PartyStockLedgerSummary;
+    moneySummary: PartyMoneyLedgerSummary;
+    transfers: StockTransfer[];
+    sales: Sale[];
+    payments: PartyPayment[];
+  }> {
+    const parties = await this.getParties();
+    const party = parties.find(p => p.id === partyId);
+    if (!party) throw new Error('Party not found.');
+
+    const states = await this.getStates();
+    const state = states.find(s => s.id === party.state_id);
+
+    const transfers = await this.getStockTransfers();
+    const partyTransfers = transfers.filter(t => t.destination_party_id === partyId);
+
+    const sales = await this.getSales();
+    const partySales = sales.filter(s => s.party_id === partyId && s.status === 'completed');
+
+    const partyPayments = await this.getPartyPayments();
+    const specificPayments = partyPayments.filter(p => p.party_id === partyId);
+
+    // 1. Stock Ledger Breakdown by Item
+    const itemMap = new Map<
+      string,
+      {
+        item_id: string;
+        item_name: string;
+        issued_qty: number;
+        returned_qty: number;
+        sold_qty: number;
+        held_qty: number;
+      }
+    >();
+
+    partyTransfers.forEach(t => {
+      let entry = itemMap.get(t.item_id);
+      if (!entry) {
+        entry = { item_id: t.item_id, item_name: t.item_name, issued_qty: 0, returned_qty: 0, sold_qty: 0, held_qty: 0 };
+        itemMap.set(t.item_id, entry);
+      }
+      if (t.transfer_type === 'issue') {
+        entry.issued_qty += t.quantity;
+      } else {
+        entry.returned_qty += t.quantity;
+      }
+    });
+
+    partySales.forEach(s => {
+      s.items?.forEach(line => {
+        if (!line.item_id) return;
+        let entry = itemMap.get(line.item_id);
+        if (!entry) {
+          entry = { item_id: line.item_id, item_name: line.item_name, issued_qty: 0, returned_qty: 0, sold_qty: 0, held_qty: 0 };
+          itemMap.set(line.item_id, entry);
+        }
+        if (s.deduct_from_party_stock) {
+          entry.sold_qty += line.quantity;
+        }
+      });
+    });
+
+    const stockItems = Array.from(itemMap.values()).map(item => ({
+      ...item,
+      held_qty: Math.max(0, item.issued_qty - item.returned_qty - item.sold_qty)
+    }));
+
+    const totalHeldPieces = stockItems.reduce((sum, i) => sum + i.held_qty, 0);
+
+    const stockSummary: PartyStockLedgerSummary = {
+      party_id: party.id,
+      party_name: party.name,
+      state_id: party.state_id,
+      state_name: state?.name || 'Unknown State',
+      items: stockItems,
+      total_held_pieces: totalHeldPieces
+    };
+
+    // 2. Money Ledger Breakdown
+    const openingBalance = Number(party.opening_balance) || 0;
+    const totalSalesAmount = partySales.reduce((sum, s) => sum + s.grand_total, 0);
+
+    let totalSalePaymentsReceived = 0;
+    partySales.forEach(s => {
+      totalSalePaymentsReceived += s.amount_received || 0;
+    });
+
+    const partyPaymentsReceived = specificPayments
+      .filter(p => p.payment_type === 'received')
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    const partyPaymentsMade = specificPayments
+      .filter(p => p.payment_type === 'paid')
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    const totalReceived = Math.round((totalSalePaymentsReceived + partyPaymentsReceived) * 100) / 100;
+    const totalPaid = Math.round(partyPaymentsMade * 100) / 100;
+
+    const netPosition = Math.round((openingBalance + totalSalesAmount + totalPaid - totalReceived) * 100) / 100;
+    const netReceivable = netPosition > 0 ? netPosition : 0;
+    const netPayable = netPosition < 0 ? Math.abs(netPosition) : 0;
+
+    const moneySummary: PartyMoneyLedgerSummary = {
+      party_id: party.id,
+      party_name: party.name,
+      state_id: party.state_id,
+      state_name: state?.name || 'Unknown State',
+      phone: party.phone,
+      opening_balance: openingBalance,
+      total_sales: totalSalesAmount,
+      total_received: totalReceived,
+      total_paid: totalPaid,
+      net_receivable: netReceivable,
+      net_payable: netPayable,
+      net_position: netPosition
+    };
+
+    return {
+      party,
+      state,
+      stockSummary,
+      moneySummary,
+      transfers: partyTransfers,
+      sales: partySales,
+      payments: specificPayments
+    };
   }
 
   // --- BACKUP & RESTORE ---
@@ -1051,10 +1581,14 @@ class StorageService {
     if (Array.isArray(payload.purchases)) this.saveToLocal(STORAGE_KEYS.PURCHASES, payload.purchases);
     if (Array.isArray(payload.sales)) this.saveToLocal(STORAGE_KEYS.SALES, payload.sales);
     if (Array.isArray(payload.expenses)) this.saveToLocal(STORAGE_KEYS.EXPENSES, payload.expenses);
+    if (Array.isArray(payload.states)) this.saveToLocal(STORAGE_KEYS.STATES, payload.states);
+    if (Array.isArray(payload.parties)) this.saveToLocal(STORAGE_KEYS.PARTIES, payload.parties);
+    if (Array.isArray(payload.stock_transfers)) this.saveToLocal(STORAGE_KEYS.STOCK_TRANSFERS, payload.stock_transfers);
+    if (Array.isArray(payload.party_payments)) this.saveToLocal(STORAGE_KEYS.PARTY_PAYMENTS, payload.party_payments);
 
     return {
       success: true,
-      message: `Successfully restored ${payload.items?.length || 0} items, ${payload.purchases?.length || 0} purchases, ${payload.sales?.length || 0} sales, and ${payload.expenses?.length || 0} expenses.`
+      message: `Successfully restored backup with items, purchases, sales, states, parties, and ledgers.`
     };
   }
 }

@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { X, Printer, CheckCircle2, ShieldCheck, Building, CreditCard } from 'lucide-react';
+import { X, Printer, CheckCircle2, ShieldCheck, Building, CreditCard, Share2 } from 'lucide-react';
 import { Sale } from '../../types';
 import { formatCurrency, formatDate } from '../../lib/formatters';
 import { useAppData } from '../../context/AppDataContext';
@@ -71,6 +71,54 @@ export const InvoiceReceiptModal: React.FC<InvoiceReceiptModalProps> = ({ sale, 
   const amountReceived = sale.amount_received !== undefined ? sale.amount_received : grandTotal;
   const amountDue = sale.amount_due !== undefined ? sale.amount_due : Math.max(0, grandTotal - amountReceived);
 
+  const handleShareWhatsApp = async () => {
+    const billSummary =
+      `*${settings.hindi_header || '॥ श्री ॥'}*\n` +
+      `*${settings.business_name || 'SEVEN STAR JWELS'}*\n` +
+      `--------------------------------\n` +
+      `*Tax Invoice:* ${sale.invoice_number}\n` +
+      `*Date:* ${formatDate(sale.sale_date)}\n` +
+      `*Customer:* ${sale.customer_name}\n` +
+      `--------------------------------\n` +
+      (sale.items || [])
+        .map(
+          (item, idx) =>
+            `${idx + 1}. ${item.item_name} x ${item.quantity} @ ₹${item.unit_sale_rate} = ₹${item.line_total}`
+        )
+        .join('\n') +
+      `\n--------------------------------\n` +
+      `*Grand Total:* ₹${grandTotal.toFixed(2)}\n` +
+      `*Amount Received:* ₹${amountReceived.toFixed(2)}\n` +
+      `*Balance Due:* ₹${amountDue.toFixed(2)}\n` +
+      `*Status:* ${sale.payment_status}\n` +
+      `--------------------------------\n` +
+      `_Quality Builds Trust_`;
+
+    if (typeof navigator !== 'undefined' && navigator.share) {
+      try {
+        await navigator.share({
+          title: `Invoice ${sale.invoice_number} - SEVEN STAR JWELS`,
+          text: billSummary
+        });
+        return;
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.log('Native share failed, fallback to direct WhatsApp', err);
+        } else {
+          return;
+        }
+      }
+    }
+
+    const cleanPhone = sale.customer_phone ? sale.customer_phone.replace(/[^0-9]/g, '') : '';
+    const targetPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+    const waUrl = targetPhone
+      ? `https://api.whatsapp.com/send?phone=${targetPhone}&text=${encodeURIComponent(billSummary)}`
+      : `https://api.whatsapp.com/send?text=${encodeURIComponent(billSummary)}`;
+
+    window.open(waUrl, '_blank');
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-sm overflow-y-auto">
       <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl w-full max-w-4xl max-h-[96vh] flex flex-col shadow-2xl relative my-auto animate-in fade-in zoom-in-95 duration-150">
@@ -92,11 +140,19 @@ export const InvoiceReceiptModal: React.FC<InvoiceReceiptModalProps> = ({ sale, 
           </div>
           <div className="flex items-center gap-2">
             <button
+              onClick={handleShareWhatsApp}
+              className="flex items-center gap-1.5 px-3 sm:px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow transition active:scale-95"
+              title="Share via WhatsApp"
+            >
+              <Share2 size={15} />
+              <span>Share WhatsApp</span>
+            </button>
+            <button
               onClick={handlePrint}
-              className="flex items-center gap-1.5 px-4 py-2 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold shadow transition active:scale-95"
+              className="flex items-center gap-1.5 px-3 sm:px-4 py-2 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold shadow transition active:scale-95"
             >
               <Printer size={15} />
-              <span>Print A4 Invoice</span>
+              <span>Print A4</span>
             </button>
             <button
               onClick={onClose}
@@ -139,21 +195,11 @@ export const InvoiceReceiptModal: React.FC<InvoiceReceiptModalProps> = ({ sale, 
               TAX INVOICE (WHOLESALE SUPPLY)
             </div>
 
-            {/* Invoice Meta & Buyer Details */}
+            {/* Invoice Meta & Buyer Details (GSTIN & Buyer Address Removed) */}
             <div className="grid grid-cols-2 gap-4 py-2 border-b border-slate-300 text-xs">
               <div className="space-y-1">
-                <p className="text-slate-500 uppercase tracking-wide text-[10px] font-bold">Billed To (Buyer):</p>
+                <p className="text-slate-500 uppercase tracking-wide text-[10px] font-bold">Billed To (Party):</p>
                 <p className="font-bold text-slate-900 text-sm">{sale.customer_name || 'Counter Wholesale Party'}</p>
-                {sale.buyer_address && (
-                  <p className="text-slate-700 text-[11px]">{sale.buyer_address}</p>
-                )}
-                {sale.buyer_gstin ? (
-                  <p className="font-mono text-slate-800 text-[11px]">
-                    Buyer GSTIN: <strong>{sale.buyer_gstin}</strong>
-                  </p>
-                ) : (
-                  <p className="text-slate-500 text-[11px]">Unregistered Buyer</p>
-                )}
                 {sale.customer_phone && (
                   <p className="text-slate-700 text-[11px]">Phone: {sale.customer_phone}</p>
                 )}

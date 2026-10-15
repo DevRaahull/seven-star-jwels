@@ -10,7 +10,9 @@ import {
   AlertCircle,
   Building,
   CheckCircle2,
-  Printer
+  Printer,
+  Package,
+  Users
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext';
 import { formatCurrency, formatDate } from '../../lib/formatters';
@@ -19,14 +21,29 @@ import { DateFilterPreset } from '../../types';
 import { InvoicesListView } from '../invoices/InvoicesListView';
 
 interface AccountsReportsViewProps {
-  initialSubTab?: 'bills_ledger' | 'income_expenditure' | 'monthly_summary' | 'balance_sheet' | 'custom_report';
+  initialSubTab?:
+    | 'bills_ledger'
+    | 'income_expenditure'
+    | 'party_stock'
+    | 'party_finances'
+    | 'monthly_summary'
+    | 'balance_sheet'
+    | 'custom_report';
 }
 
 export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initialSubTab = 'bills_ledger' }) => {
-  const { sales, purchases, items, expenses, settings } = useAppData();
+  const { sales, purchases, items, expenses, settings, states, parties, stockTransfers, partyPayments } = useAppData();
 
   // Active Sub-Tab
-  const [activeTab, setActiveTab] = useState<'bills_ledger' | 'income_expenditure' | 'monthly_summary' | 'balance_sheet' | 'custom_report'>(initialSubTab);
+  const [activeTab, setActiveTab] = useState<
+    | 'bills_ledger'
+    | 'income_expenditure'
+    | 'party_stock'
+    | 'party_finances'
+    | 'monthly_summary'
+    | 'balance_sheet'
+    | 'custom_report'
+  >(initialSubTab);
 
   // Date Filter for Income & Expenditure / Custom Report
   const [filterPreset, setFilterPreset] = useState<DateFilterPreset>('this_month');
@@ -68,25 +85,30 @@ export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initia
   const periodData = useMemo(() => {
     const { start, end } = dateRange;
 
+    // Helper for strictly inclusive date checking
+    const isWithinRange = (dateStr: string) => {
+      if (!dateStr) return false;
+      const rawDate = dateStr.includes('T') ? dateStr : `${dateStr.slice(0, 10)}T12:00:00`;
+      const d = new Date(rawDate);
+      return d >= start && d <= end;
+    };
+
     // Filter sales
     const filteredSales = sales.filter(s => {
       if (s.status !== 'completed') return false;
-      const d = new Date(s.sale_date);
-      return d >= start && d <= end;
+      return isWithinRange(s.sale_date);
     });
 
     // Filter purchases
     const filteredPurchases = purchases.filter(p => {
       if (p.status !== 'active') return false;
-      const d = new Date(p.purchase_date);
-      return d >= start && d <= end;
+      return isWithinRange(p.purchase_date);
     });
 
     // Filter expenses
     const filteredExpenses = expenses.filter(e => {
       if (e.is_cancelled) return false;
-      const d = new Date(e.expense_date);
-      return d >= start && d <= end;
+      return isWithinRange(e.expense_date);
     });
 
     // Calculations
@@ -336,6 +358,185 @@ export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initia
     exportToCsv(`monthly_sales_summary_${new Date().toISOString().slice(0, 10)}`, headers, rows);
   };
 
+  // Stock Held by Each State & Party
+  const partyStockHeldData = useMemo(() => {
+    return parties
+      .filter(p => !p.is_archived)
+      .map(party => {
+        const state = states.find(s => s.id === party.state_id);
+        const pTransfers = stockTransfers.filter(t => t.destination_party_id === party.id);
+        const pSales = sales.filter(s => s.party_id === party.id && s.status === 'completed');
+
+        const itemMap = new Map<
+          string,
+          { itemName: string; issued: number; returned: number; sold: number; held: number }
+        >();
+        pTransfers.forEach(t => {
+          let entry = itemMap.get(t.item_id);
+          if (!entry) {
+            entry = { itemName: t.item_name, issued: 0, returned: 0, sold: 0, held: 0 };
+            itemMap.set(t.item_id, entry);
+          }
+          if (t.transfer_type === 'issue') entry.issued += t.quantity;
+          else entry.returned += t.quantity;
+        });
+
+        pSales.forEach(s => {
+          if (s.deduct_from_party_stock) {
+            s.items?.forEach(line => {
+              if (!line.item_id) return;
+              let entry = itemMap.get(line.item_id);
+              if (!entry) {
+                entry = { itemName: line.item_name, issued: 0, returned: 0, sold: 0, held: 0 };
+                itemMap.set(line.item_id, entry);
+              }
+              entry.sold += line.quantity;
+            });
+          }
+        });
+
+        const itemsBreakdown = Array.from(itemMap.values()).map(i => ({
+          ...i,
+          held: Math.max(0, i.issued - i.returned - i.sold)
+        }));
+
+        const totalHeldPieces = itemsBreakdown.reduce((sum, i) => sum + i.held, 0);
+
+        return {
+          partyId: party.id,
+          partyName: party.name,
+          stateName: state?.name || 'Unknown State',
+          phone: party.phone,
+          itemsBreakdown,
+          totalHeldPieces
+        };
+      });
+  }, [parties, states, stockTransfers, sales]);
+
+  // Party Receivables & Payables Report
+  const partyFinancesData = useMemo(() => {
+    let totalReceivables = 0;
+    let totalPayables = 0;
+
+    const list = parties
+      .filter(p => !p.is_archived)
+      .map(party => {
+        const state = states.find(s => s.id === party.state_id);
+        const pSales = sales.filter(s => s.party_id === party.id && s.status === 'completed');
+        const pPayments = partyPayments.filter(pay => pay.party_id === party.id);
+
+        const opening = Number(party.opening_balance) || 0;
+        const salesTotal = pSales.reduce((sum, s) => sum + s.grand_total, 0);
+        const salesReceived = pSales.reduce((sum, s) => sum + (s.amount_received || 0), 0);
+        const directReceived = pPayments
+          .filter(pay => pay.payment_type === 'received')
+          .reduce((sum, pay) => sum + pay.amount, 0);
+        const directPaid = pPayments
+          .filter(pay => pay.payment_type === 'paid')
+          .reduce((sum, pay) => sum + pay.amount, 0);
+
+        const totalReceived = salesReceived + directReceived;
+        const netPosition = Math.round((opening + salesTotal + directPaid - totalReceived) * 100) / 100;
+        const receivable = netPosition > 0 ? netPosition : 0;
+        const payable = netPosition < 0 ? Math.abs(netPosition) : 0;
+
+        totalReceivables += receivable;
+        totalPayables += payable;
+
+        return {
+          partyId: party.id,
+          partyName: party.name,
+          stateName: state?.name || 'Unknown State',
+          phone: party.phone,
+          opening,
+          salesTotal,
+          totalReceived,
+          directPaid,
+          netPosition,
+          receivable,
+          payable
+        };
+      });
+
+    return {
+      partiesList: list,
+      totalReceivables: Math.round(totalReceivables * 100) / 100,
+      totalPayables: Math.round(totalPayables * 100) / 100
+    };
+  }, [parties, states, sales, partyPayments]);
+
+  // Export Party Stock to CSV
+  const handleExportPartyStockCsv = () => {
+    const headers = [
+      'Party Name',
+      'State',
+      'Phone',
+      'Item Name',
+      'Issued (pcs)',
+      'Returned (pcs)',
+      'Sold/Billed (pcs)',
+      'Current Held (pcs)'
+    ];
+    const rows: any[] = [];
+    partyStockHeldData.forEach(p => {
+      if (p.itemsBreakdown.length === 0) {
+        rows.push([p.partyName, p.stateName, p.phone || '-', 'None', 0, 0, 0, 0]);
+      } else {
+        p.itemsBreakdown.forEach(item => {
+          rows.push([
+            p.partyName,
+            p.stateName,
+            p.phone || '-',
+            item.itemName,
+            item.issued,
+            item.returned,
+            item.sold,
+            item.held
+          ]);
+        });
+      }
+    });
+    exportToCsv(`party_stock_held_${new Date().toISOString().slice(0, 10)}`, headers, rows);
+  };
+
+  // Export Party Finances to CSV
+  const handleExportPartyFinancesCsv = () => {
+    const headers = [
+      'Party Name',
+      'State',
+      'Phone',
+      'Opening Balance (₹)',
+      'Total Sales (₹)',
+      'Total Received (₹)',
+      'Direct Paid (₹)',
+      'Net Receivable (₹)',
+      'Net Payable (₹)'
+    ];
+    const rows = partyFinancesData.partiesList.map(p => [
+      p.partyName,
+      p.stateName,
+      p.phone || '-',
+      p.opening.toFixed(2),
+      p.salesTotal.toFixed(2),
+      p.totalReceived.toFixed(2),
+      p.directPaid.toFixed(2),
+      p.receivable.toFixed(2),
+      p.payable.toFixed(2)
+    ]);
+    rows.push([
+      'TOTAL',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      partyFinancesData.totalReceivables.toFixed(2),
+      partyFinancesData.totalPayables.toFixed(2)
+    ]);
+    exportToCsv(`party_receivables_payables_${new Date().toISOString().slice(0, 10)}`, headers, rows);
+  };
+
   return (
     <div className="space-y-6 pb-16">
       {/* Top Header & Sub-Tabs */}
@@ -345,7 +546,7 @@ export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initia
             Wholesale Accounts & Reports
           </h2>
           <p className="text-xs text-[#AAB4C5] mt-0.5">
-            Income & Expenditure, Financial Position, GST liabilities, and monthly sales summaries.
+            Profit & Loss, Stock Held by Parties, Receivables & Payables, and Invoices.
           </p>
         </div>
 
@@ -359,7 +560,7 @@ export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initia
                 : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
             }`}
           >
-            Bills & Invoices Ledger
+            Bills Ledger
           </button>
           <button
             onClick={() => setActiveTab('income_expenditure')}
@@ -369,7 +570,27 @@ export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initia
                 : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
             }`}
           >
-            Income & Expenditure (P&L)
+            Profit & Loss (P&L)
+          </button>
+          <button
+            onClick={() => setActiveTab('party_stock')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              activeTab === 'party_stock'
+                ? 'bg-[#D6B36A] text-[#0B1220] shadow-sm'
+                : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
+            }`}
+          >
+            Party Stock Held
+          </button>
+          <button
+            onClick={() => setActiveTab('party_finances')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              activeTab === 'party_finances'
+                ? 'bg-[#D6B36A] text-[#0B1220] shadow-sm'
+                : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
+            }`}
+          >
+            Party Receivables / Payables
           </button>
           <button
             onClick={() => setActiveTab('balance_sheet')}
@@ -379,7 +600,7 @@ export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initia
                 : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
             }`}
           >
-            Balance Sheet / Position
+            Balance Sheet
           </button>
           <button
             onClick={() => setActiveTab('monthly_summary')}
@@ -389,17 +610,7 @@ export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initia
                 : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
             }`}
           >
-            Monthly Sales Summary
-          </button>
-          <button
-            onClick={() => setActiveTab('custom_report')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-              activeTab === 'custom_report'
-                ? 'bg-[#D6B36A] text-[#0B1220] shadow-sm'
-                : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
-            }`}
-          >
-            Custom Date-Range
+            Monthly Sales
           </button>
         </div>
       </div>
@@ -586,6 +797,246 @@ export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initia
               <p>
                 2. <strong>True COGS matching</strong>: Expenses do not penalize unsold inventory stock. Stock remaining in your safe is an Asset on your Balance Sheet, not an expense.
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUB-TAB: STOCK HELD BY STATES & PARTIES */}
+      {activeTab === 'party_stock' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-[#D6B36A] uppercase tracking-wider flex items-center gap-2">
+                <Package size={16} />
+                <span>Stock Held by Each State & Party</span>
+              </h3>
+              <p className="text-xs text-[#AAB4C5] mt-0.5">
+                Physical jewellery pieces held across parties without recording sales or receivables.
+              </p>
+            </div>
+            <button
+              onClick={handleExportPartyStockCsv}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#16233B] hover:bg-[#1E2E4A] border border-[#1E2B45] text-[#D6B36A] rounded-lg text-xs font-semibold transition"
+            >
+              <FileSpreadsheet size={14} />
+              <span>Export Stock CSV</span>
+            </button>
+          </div>
+
+          {/* Quick Metrics */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-3.5">
+              <span className="text-xs text-[#AAB4C5]">Active Consignment Parties</span>
+              <p className="text-xl font-bold font-mono text-[#F5F3EE] mt-1">
+                {partyStockHeldData.filter(p => p.totalHeldPieces > 0).length}
+              </p>
+            </div>
+            <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-3.5">
+              <span className="text-xs text-[#AAB4C5]">Total Pieces in Field</span>
+              <p className="text-xl font-bold font-mono text-[#D6B36A] mt-1">
+                {partyStockHeldData.reduce((sum, p) => sum + p.totalHeldPieces, 0)} pcs
+              </p>
+            </div>
+            <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-3.5 col-span-2 sm:col-span-1">
+              <span className="text-xs text-[#AAB4C5]">Total Registered Parties</span>
+              <p className="text-xl font-bold font-mono text-emerald-400 mt-1">
+                {partyStockHeldData.length}
+              </p>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl overflow-hidden shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="bg-[#0E1726] border-b border-[#1E2B45] text-[#AAB4C5]">
+                    <th className="py-3 px-4 font-semibold">Party & State</th>
+                    <th className="py-3 px-4 font-semibold">Phone</th>
+                    <th className="py-3 px-4 font-semibold">Item-wise Consignment Breakdown</th>
+                    <th className="py-3 px-4 font-semibold text-right">Total Held</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#1E2B45]/60">
+                  {partyStockHeldData.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="py-8 text-center text-[#7A8699]">
+                        No registered parties found. Add states and parties from the States & Parties tab.
+                      </td>
+                    </tr>
+                  ) : (
+                    partyStockHeldData.map(party => (
+                      <tr key={party.partyId} className="hover:bg-[#16233B]/40 transition align-top">
+                        <td className="py-3.5 px-4">
+                          <div className="font-semibold text-[#F5F3EE]">{party.partyName}</div>
+                          <span className="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#16233B] text-[#D6B36A] border border-[#1E2B45]">
+                            {party.stateName}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 font-mono text-[#AAB4C5]">
+                          {party.phone ? (
+                            <a href={`tel:${party.phone}`} className="text-emerald-400 hover:underline">
+                              {party.phone}
+                            </a>
+                          ) : (
+                            <span className="text-[#7A8699]">-</span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          {party.itemsBreakdown.length === 0 ? (
+                            <span className="text-[#7A8699] italic">No stock transfers recorded</span>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {party.itemsBreakdown.map((item, idx) => (
+                                <div key={idx} className="flex flex-wrap items-center justify-between text-xs bg-[#0B1220]/60 p-1.5 rounded border border-[#1E2B45]">
+                                  <span className="font-medium text-[#F5F3EE]">{item.itemName}</span>
+                                  <div className="flex items-center gap-2 font-mono text-[11px]">
+                                    <span className="text-[#AAB4C5]">Issued: {item.issued}</span>
+                                    <span className="text-amber-400">Returned: {item.returned}</span>
+                                    <span className="text-blue-400">Sold: {item.sold}</span>
+                                    <span className="font-bold text-[#D6B36A] bg-[#D6B36A]/10 px-1.5 py-0.5 rounded border border-[#D6B36A]/30">
+                                      Held: {item.held}
+                                    </span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4 text-right">
+                          <span className="inline-block font-mono text-sm font-bold text-[#D6B36A] bg-[#D6B36A]/10 px-2.5 py-1 rounded-lg border border-[#D6B36A]/30">
+                            {party.totalHeldPieces} pcs
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUB-TAB: PARTY RECEIVABLES & PAYABLES */}
+      {activeTab === 'party_finances' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-[#D6B36A] uppercase tracking-wider flex items-center gap-2">
+                <DollarSign size={16} />
+                <span>Party Receivables & Payables Report</span>
+              </h3>
+              <p className="text-xs text-[#AAB4C5] mt-0.5">
+                Financial balances, sales billed, payments received and settlements across parties.
+              </p>
+            </div>
+            <button
+              onClick={handleExportPartyFinancesCsv}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#16233B] hover:bg-[#1E2E4A] border border-[#1E2B45] text-[#D6B36A] rounded-lg text-xs font-semibold transition"
+            >
+              <FileSpreadsheet size={14} />
+              <span>Export Finances CSV</span>
+            </button>
+          </div>
+
+          {/* Quick Metrics */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="bg-[#111B2E] border border-emerald-500/30 rounded-xl p-4">
+              <span className="text-xs text-emerald-400 font-medium">Total Party Receivables (Money Due In)</span>
+              <p className="text-2xl font-bold font-mono text-emerald-400 mt-1">
+                {formatCurrency(partyFinancesData.totalReceivables)}
+              </p>
+              <span className="text-[11px] text-[#7A8699] mt-0.5 block">
+                Total unpaid sales balances & debit positions across all parties
+              </span>
+            </div>
+            <div className="bg-[#111B2E] border border-rose-500/30 rounded-xl p-4">
+              <span className="text-xs text-rose-400 font-medium">Total Party Payables (Advances / Credit Dues)</span>
+              <p className="text-2xl font-bold font-mono text-rose-400 mt-1">
+                {formatCurrency(partyFinancesData.totalPayables)}
+              </p>
+              <span className="text-[11px] text-[#7A8699] mt-0.5 block">
+                Advance money received from parties pending billing
+              </span>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl overflow-hidden shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs font-mono">
+                <thead>
+                  <tr className="bg-[#0E1726] border-b border-[#1E2B45] text-[#AAB4C5] font-sans">
+                    <th className="py-3 px-4 font-semibold">Party Name</th>
+                    <th className="py-3 px-4 font-semibold">State</th>
+                    <th className="py-3 px-4 font-semibold">Phone</th>
+                    <th className="py-3 px-4 font-semibold text-right">Opening (₹)</th>
+                    <th className="py-3 px-4 font-semibold text-right">Sales (₹)</th>
+                    <th className="py-3 px-4 font-semibold text-right text-emerald-400">Received (₹)</th>
+                    <th className="py-3 px-4 font-semibold text-right text-rose-400">Paid Out (₹)</th>
+                    <th className="py-3 px-4 font-semibold text-right text-emerald-400">Receivable (₹)</th>
+                    <th className="py-3 px-4 font-semibold text-right text-rose-400">Payable (₹)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#1E2B45]/60">
+                  {partyFinancesData.partiesList.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-8 text-center text-[#7A8699] font-sans">
+                        No registered parties found.
+                      </td>
+                    </tr>
+                  ) : (
+                    partyFinancesData.partiesList.map(p => (
+                      <tr key={p.partyId} className="hover:bg-[#16233B]/40 transition">
+                        <td className="py-3 px-4 font-sans font-semibold text-[#F5F3EE]">
+                          {p.partyName}
+                        </td>
+                        <td className="py-3 px-4 font-sans text-[#AAB4C5]">
+                          {p.stateName}
+                        </td>
+                        <td className="py-3 px-4 text-[#AAB4C5]">
+                          {p.phone || '-'}
+                        </td>
+                        <td className="py-3 px-4 text-right text-[#AAB4C5]">
+                          {formatCurrency(p.opening)}
+                        </td>
+                        <td className="py-3 px-4 text-right text-[#F5F3EE]">
+                          {formatCurrency(p.salesTotal)}
+                        </td>
+                        <td className="py-3 px-4 text-right text-emerald-400 font-semibold">
+                          {formatCurrency(p.totalReceived)}
+                        </td>
+                        <td className="py-3 px-4 text-right text-rose-400">
+                          {formatCurrency(p.directPaid)}
+                        </td>
+                        <td className="py-3 px-4 text-right font-bold text-emerald-400">
+                          {p.receivable > 0 ? formatCurrency(p.receivable) : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-right font-bold text-rose-400">
+                          {p.payable > 0 ? formatCurrency(p.payable) : '-'}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+                {partyFinancesData.partiesList.length > 0 && (
+                  <tfoot>
+                    <tr className="bg-[#0E1726] border-t-2 border-[#1E2B45] text-xs font-bold">
+                      <td colSpan={7} className="py-3.5 px-4 font-sans text-right text-[#D6B36A] uppercase tracking-wider">
+                        Consolidated Totals:
+                      </td>
+                      <td className="py-3.5 px-4 text-right text-emerald-400 text-sm">
+                        {formatCurrency(partyFinancesData.totalReceivables)}
+                      </td>
+                      <td className="py-3.5 px-4 text-right text-rose-400 text-sm">
+                        {formatCurrency(partyFinancesData.totalPayables)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
             </div>
           </div>
         </div>
