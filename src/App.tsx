@@ -91,11 +91,11 @@ const MainAppContent: React.FC = () => {
             )}
 
             {(activeTab === 'reports' || activeTab === 'accounts') && (
-              <AccountsReportsView initialSubTab="bills_ledger" />
+              <AccountsReportsView initialSubTab="income_expenditure" />
             )}
 
             {activeTab === 'invoices' && (
-              <AccountsReportsView initialSubTab="bills_ledger" />
+              <SalesEntryView />
             )}
 
             {activeTab === 'backup' && (

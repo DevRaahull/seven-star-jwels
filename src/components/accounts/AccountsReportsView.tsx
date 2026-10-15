@@ -18,11 +18,10 @@ import { useAppData } from '../../context/AppDataContext';
 import { formatCurrency, formatDate } from '../../lib/formatters';
 import { exportToCsv } from '../../lib/exportUtils';
 import { DateFilterPreset } from '../../types';
-import { InvoicesListView } from '../invoices/InvoicesListView';
+// import { InvoicesListView } from '../invoices/InvoicesListView';
 
 interface AccountsReportsViewProps {
   initialSubTab?:
-    | 'bills_ledger'
     | 'income_expenditure'
     | 'party_stock'
     | 'party_finances'
@@ -31,12 +30,11 @@ interface AccountsReportsViewProps {
     | 'custom_report';
 }
 
-export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initialSubTab = 'bills_ledger' }) => {
+export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initialSubTab = 'income_expenditure' }) => {
   const { sales, purchases, items, expenses, settings, states, parties, stockTransfers, partyPayments } = useAppData();
 
   // Active Sub-Tab
   const [activeTab, setActiveTab] = useState<
-    | 'bills_ledger'
     | 'income_expenditure'
     | 'party_stock'
     | 'party_finances'
@@ -553,16 +551,6 @@ export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initia
         {/* Sub-Navigation Tabs */}
         <div className="flex flex-wrap items-center gap-1.5 bg-[#111B2E] p-1 rounded-xl border border-[#1E2B45]">
           <button
-            onClick={() => setActiveTab('bills_ledger')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-              activeTab === 'bills_ledger'
-                ? 'bg-[#D6B36A] text-[#0B1220] shadow-sm'
-                : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
-            }`}
-          >
-            Bills Ledger
-          </button>
-          <button
             onClick={() => setActiveTab('income_expenditure')}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
               activeTab === 'income_expenditure'
@@ -614,11 +602,6 @@ export const AccountsReportsView: React.FC<AccountsReportsViewProps> = ({ initia
           </button>
         </div>
       </div>
-
-      {/* SUB-TAB 0: BILLS & INVOICES LEDGER WITH RECORD PAYMENT */}
-      {activeTab === 'bills_ledger' && (
-        <InvoicesListView />
-      )}
 
       {/* SUB-TAB 1: INCOME & EXPENDITURE STATEMENT */}
       {(activeTab === 'income_expenditure' || activeTab === 'custom_report') && (

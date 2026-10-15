@@ -13,7 +13,11 @@ import {
   FileText,
   DollarSign,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Edit3,
+  Eye,
+  RotateCcw,
+  X
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext';
 import { formatCurrency, formatDate } from '../../lib/formatters';
@@ -30,9 +34,7 @@ interface PurchaseLineForm {
 }
 
 export const PurchaseEntryView: React.FC = () => {
-  const { items, purchases, createPurchase, deletePurchase, settings } = useAppData();
-
-  const [activeSubTab, setActiveSubTab] = useState<'new_entry' | 'register'>('new_entry');
+  const { items, purchases, createPurchase, updatePurchase, deletePurchase, settings } = useAppData();
 
   // Form State
   const [purchaseDate, setPurchaseDate] = useState<string>(new Date().toISOString().split('T')[0]);
@@ -63,12 +65,19 @@ export const PurchaseEntryView: React.FC = () => {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Register Search & Filter State
+  // Edit Mode State
+  const [editingPurchaseId, setEditingPurchaseId] = useState<string | null>(null);
+
+  // History Search & Filter State
   const [searchTerm, setSearchTerm] = useState<string>('');
+  const [monthFilter, setMonthFilter] = useState<string>('all');
+  const [purchaseStartDate, setPurchaseStartDate] = useState<string>('');
+  const [purchaseEndDate, setPurchaseEndDate] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [expandedPurchaseId, setExpandedPurchaseId] = useState<string | null>(null);
+  const [displayLimit, setDisplayLimit] = useState<number>(15);
   const [purchaseToDelete, setPurchaseToDelete] = useState<Purchase | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  const [selectedPurchaseForModal, setSelectedPurchaseForModal] = useState<Purchase | null>(null);
 
   const handleDeletePurchase = async () => {
     if (!purchaseToDelete) return;
@@ -84,6 +93,55 @@ export const PurchaseEntryView: React.FC = () => {
     } finally {
       setIsDeleting(false);
     }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingPurchaseId(null);
+    setPurchaseDate(new Date().toISOString().split('T')[0]);
+    setSupplierName('');
+    setSupplierInvoiceNumber('');
+    setSupplierGstin('');
+    setIsInterstate(false);
+    setNotes('');
+    setAmountPaid('');
+    setManualPaymentStatus('auto');
+    setLines([
+      {
+        tempId: `line-${Date.now()}`,
+        itemId: '',
+        itemName: '',
+        category: 'Nose Pin',
+        quantity: 1,
+        unitPurchaseRate: '',
+        gstRate: defaultGst
+      }
+    ]);
+  };
+
+  const handleStartEdit = (purchase: Purchase) => {
+    setEditingPurchaseId(purchase.id);
+    setPurchaseDate(purchase.purchase_date ? purchase.purchase_date.split('T')[0] : new Date().toISOString().split('T')[0]);
+    setSupplierName(purchase.supplier_name);
+    setSupplierInvoiceNumber(purchase.supplier_invoice_number);
+    setSupplierGstin(purchase.supplier_gstin || '');
+    setIsInterstate(Boolean(purchase.is_interstate));
+    setNotes(purchase.notes || '');
+    setAmountPaid(purchase.amount_paid !== undefined ? purchase.amount_paid : '');
+    setManualPaymentStatus('auto');
+
+    if (purchase.items && purchase.items.length > 0) {
+      setLines(purchase.items.map((it, idx) => ({
+        tempId: `edit-pitem-${idx}-${Date.now()}`,
+        itemId: it.item_id || '',
+        itemName: it.item_name,
+        category: 'Jewellery',
+        quantity: it.quantity,
+        unitPurchaseRate: it.unit_purchase_rate,
+        gstRate: it.gst_rate !== undefined ? it.gst_rate : defaultGst
+      })));
+    }
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // Supplier Autocomplete Suggestions
@@ -210,56 +268,62 @@ export const PurchaseEntryView: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      const purchaseData = {
-        purchase_date: new Date(purchaseDate).toISOString(),
-        supplier_name: supplierName.trim(),
-        supplier_gstin: supplierGstin.trim() || undefined,
-        supplier_invoice_number: supplierInvoiceNumber.trim(),
-        is_interstate: isInterstate,
-        total_taxable: totalTaxable,
-        total_gst: totalGst,
-        grand_total: grandTotal,
-        payment_status: effectivePaymentStatus,
-        amount_paid: paidValue,
-        amount_due: amountDue,
-        notes: notes.trim() || undefined,
-        status: 'active'
-      };
+      if (editingPurchaseId) {
+        const updateData = {
+          purchase_date: new Date(purchaseDate).toISOString(),
+          supplier_name: supplierName.trim(),
+          supplier_gstin: supplierGstin.trim() || undefined,
+          supplier_invoice_number: supplierInvoiceNumber.trim(),
+          is_interstate: isInterstate,
+          notes: notes.trim() || undefined,
+          amount_paid: paidValue,
+          items: calculatedLines.map(line => ({
+            item_id: line.itemId || undefined,
+            item_name: line.itemName.trim(),
+            category: line.category || 'Jewellery',
+            quantity: Number(line.quantity),
+            unit_purchase_rate: Number(line.unitPurchaseRate),
+            gst_rate: line.gstRate
+          }))
+        };
 
-      const itemsData = calculatedLines.map(line => ({
-        item_id: line.itemId || undefined,
-        item_name: line.itemName.trim(),
-        quantity: Number(line.quantity),
-        unit_purchase_rate: Number(line.unitPurchaseRate),
-        gst_rate: line.gstRate,
-        taxable_amount: line.taxable,
-        gst_amount: line.gstAmt,
-        line_total: line.lineTotal
-      }));
+        await updatePurchase(editingPurchaseId, updateData);
+        setSuccessMessage(`Purchase bill #${supplierInvoiceNumber} updated! Inventory stock and dues recalculated.`);
+        handleCancelEdit();
+        setTimeout(() => setSuccessMessage(null), 5000);
+      } else {
+        const purchaseData = {
+          purchase_date: new Date(purchaseDate).toISOString(),
+          supplier_name: supplierName.trim(),
+          supplier_gstin: supplierGstin.trim() || undefined,
+          supplier_invoice_number: supplierInvoiceNumber.trim(),
+          is_interstate: isInterstate,
+          total_taxable: totalTaxable,
+          total_gst: totalGst,
+          grand_total: grandTotal,
+          payment_status: effectivePaymentStatus,
+          amount_paid: paidValue,
+          amount_due: amountDue,
+          notes: notes.trim() || undefined,
+          status: 'active'
+        };
 
-      await createPurchase(purchaseData, itemsData);
+        const itemsData = calculatedLines.map(line => ({
+          item_id: line.itemId || undefined,
+          item_name: line.itemName.trim(),
+          quantity: Number(line.quantity),
+          unit_purchase_rate: Number(line.unitPurchaseRate),
+          gst_rate: line.gstRate,
+          taxable_amount: line.taxable,
+          gst_amount: line.gstAmt,
+          line_total: line.lineTotal
+        }));
 
-      setSuccessMessage(`Purchase inward #${supplierInvoiceNumber} saved! Inventory stock increased successfully.`);
-
-      // Reset form
-      setSupplierName('');
-      setSupplierInvoiceNumber('');
-      setSupplierGstin('');
-      setNotes('');
-      setAmountPaid('');
-      setLines([
-        {
-          tempId: `line-${Date.now()}`,
-          itemId: '',
-          itemName: '',
-          category: 'Nose Pin',
-          quantity: 1,
-          unitPurchaseRate: '',
-          gstRate: defaultGst
-        }
-      ]);
-
-      setTimeout(() => setSuccessMessage(null), 6000);
+        await createPurchase(purchaseData, itemsData);
+        setSuccessMessage(`Purchase inward #${supplierInvoiceNumber} saved! Inventory stock increased successfully.`);
+        handleCancelEdit();
+        setTimeout(() => setSuccessMessage(null), 6000);
+      }
     } catch (err: any) {
       console.error(err);
       setErrorMessage(err.message || 'Failed to record purchase entry.');
@@ -268,22 +332,64 @@ export const PurchaseEntryView: React.FC = () => {
     }
   };
 
-  // Filtered Purchases for Register
+  // Month-Year List for dropdown
+  const availableMonths = useMemo(() => {
+    const set = new Set<string>();
+    purchases.forEach(p => {
+      if (p.purchase_date) {
+        set.add(p.purchase_date.substring(0, 7)); // YYYY-MM
+      }
+    });
+    return Array.from(set).sort().reverse();
+  }, [purchases]);
+
+  const formatMonthLabel = (yyyyMm: string) => {
+    if (!yyyyMm || !yyyyMm.includes('-')) return yyyyMm;
+    const [year, month] = yyyyMm.split('-');
+    const date = new Date(parseInt(year), parseInt(month) - 1, 1);
+    return date.toLocaleString('default', { month: 'long', year: 'numeric' });
+  };
+
+  // Filtered Purchases across all months & years
   const filteredPurchases = useMemo(() => {
     return purchases.filter(p => {
       if (p.status !== 'active') return false;
 
-      const matchesSearch =
-        p.supplier_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        p.supplier_invoice_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (p.supplier_gstin && p.supplier_gstin.toLowerCase().includes(searchTerm.toLowerCase()));
+      // 1. Text Search: supplier, invoice #, gstin, or any line item
+      if (searchTerm.trim()) {
+        const q = searchTerm.toLowerCase().trim();
+        const matchesSupplier = p.supplier_name.toLowerCase().includes(q);
+        const matchesInv = p.supplier_invoice_number.toLowerCase().includes(q);
+        const matchesGstin = p.supplier_gstin && p.supplier_gstin.toLowerCase().includes(q);
+        const matchesItem = p.items?.some(it => it.item_name.toLowerCase().includes(q));
+        if (!matchesSupplier && !matchesInv && !matchesGstin && !matchesItem) return false;
+      }
 
-      const matchesStatus =
-        statusFilter === 'all' || p.payment_status.toLowerCase() === statusFilter.toLowerCase();
+      // 2. Month Filter
+      if (monthFilter !== 'all') {
+        if (!p.purchase_date || !p.purchase_date.startsWith(monthFilter)) return false;
+      }
 
-      return matchesSearch && matchesStatus;
+      // 3. Custom Date Range
+      if (purchaseStartDate && purchaseEndDate) {
+        const pDate = p.purchase_date ? p.purchase_date.substring(0, 10) : '';
+        if (pDate < purchaseStartDate || pDate > purchaseEndDate) return false;
+      } else if (purchaseStartDate) {
+        const pDate = p.purchase_date ? p.purchase_date.substring(0, 10) : '';
+        if (pDate < purchaseStartDate) return false;
+      } else if (purchaseEndDate) {
+        const pDate = p.purchase_date ? p.purchase_date.substring(0, 10) : '';
+        if (pDate > purchaseEndDate) return false;
+      }
+
+      // 4. Status Filter
+      if (statusFilter !== 'all') {
+        if (p.payment_status.toLowerCase() !== statusFilter.toLowerCase()) return false;
+      }
+
+      return true;
     });
-  }, [purchases, searchTerm, statusFilter]);
+  }, [purchases, searchTerm, monthFilter, purchaseStartDate, purchaseEndDate, statusFilter]);
 
   // Aggregate Register Stats
   const registerStats = useMemo(() => {
@@ -295,12 +401,21 @@ export const PurchaseEntryView: React.FC = () => {
       totalPaid += p.amount_paid || 0;
       totalDue += p.amount_due || 0;
     });
-    return { totalInward, totalPaid, totalDue };
+    return {
+      count: filteredPurchases.length,
+      totalInward: Math.round(totalInward * 100) / 100,
+      totalPaid: Math.round(totalPaid * 100) / 100,
+      totalDue: Math.round(totalDue * 100) / 100
+    };
   }, [filteredPurchases]);
+
+  const visiblePurchases = useMemo(() => {
+    return filteredPurchases.slice(0, displayLimit);
+  }, [filteredPurchases, displayLimit]);
 
   return (
     <div className="space-y-6 pb-16">
-      {/* Top Header & Sub-Tabs */}
+      {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#1E2B45]">
         <div>
           <h2 className="text-xl lg:text-2xl font-serif font-bold text-gold-gradient tracking-wide">
@@ -309,29 +424,6 @@ export const PurchaseEntryView: React.FC = () => {
           <p className="text-xs text-[#AAB4C5] mt-0.5">
             Record supplier stock purchases, track GST input, and manage supplier payment dues.
           </p>
-        </div>
-
-        <div className="flex items-center gap-2 bg-[#111B2E] p-1 rounded-xl border border-[#1E2B45]">
-          <button
-            onClick={() => setActiveSubTab('new_entry')}
-            className={`px-4 py-2 rounded-lg text-xs font-semibold transition ${
-              activeSubTab === 'new_entry'
-                ? 'bg-[#D6B36A] text-[#0B1220] shadow-sm'
-                : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
-            }`}
-          >
-            + New Purchase Entry
-          </button>
-          <button
-            onClick={() => setActiveSubTab('register')}
-            className={`px-4 py-2 rounded-lg text-xs font-semibold transition ${
-              activeSubTab === 'register'
-                ? 'bg-[#D6B36A] text-[#0B1220] shadow-sm'
-                : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
-            }`}
-          >
-            Purchase Register ({purchases.length})
-          </button>
         </div>
       </div>
 
@@ -350,9 +442,35 @@ export const PurchaseEntryView: React.FC = () => {
         </div>
       )}
 
-      {/* SUB-TAB 1: NEW PURCHASE ENTRY FORM */}
-      {activeSubTab === 'new_entry' && (
-        <form onSubmit={handleSubmitPurchase} className="space-y-6">
+      {/* Editing Mode Banner */}
+      {editingPurchaseId && (
+        <div className="p-4 bg-amber-500/15 border-2 border-amber-500/40 rounded-xl text-amber-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in shadow-lg">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-amber-500/20 text-amber-300 rounded-lg shrink-0">
+              <Edit3 size={18} />
+            </div>
+            <div>
+              <span className="font-bold text-sm text-[#F5F3EE] block">
+                Editing Purchase Inward: #{supplierInvoiceNumber} ({supplierName || 'Supplier'})
+              </span>
+              <span className="text-[#AAB4C5] text-[11px]">
+                Modifying this purchase bill will adjust inventory stock levels and supplier payables.
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleCancelEdit}
+            className="px-4 py-2 bg-[#1E2B45] hover:bg-[#253655] text-[#F5F3EE] rounded-lg font-semibold text-xs transition flex items-center justify-center gap-1.5 self-start sm:self-auto shrink-0"
+          >
+            <RotateCcw size={14} />
+            <span>Cancel Edit</span>
+          </button>
+        </div>
+      )}
+
+      {/* Main Inward Form */}
+      <form onSubmit={handleSubmitPurchase} className="space-y-6">
           {/* Card 1: Supplier & Invoice Header */}
           <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-5 shadow-sm space-y-4">
             <h3 className="text-xs font-semibold text-[#D6B36A] uppercase tracking-wider flex items-center gap-2">
@@ -728,13 +846,26 @@ export const PurchaseEntryView: React.FC = () => {
 
               {/* Desktop Submit Button */}
               <div className="hidden lg:flex pt-6 items-center justify-end gap-3">
+                {editingPurchaseId && (
+                  <button
+                    type="button"
+                    onClick={handleCancelEdit}
+                    className="px-5 py-2.5 bg-[#1E2B45] hover:bg-[#253655] text-[#AAB4C5] hover:text-[#F5F3EE] rounded-xl text-xs font-semibold transition"
+                  >
+                    Cancel Edit
+                  </button>
+                )}
                 <button
                   type="submit"
                   disabled={isSubmitting}
                   className="flex items-center gap-2 px-6 py-2.5 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-50"
                 >
                   <CheckCircle2 size={16} strokeWidth={2.5} />
-                  <span>{isSubmitting ? 'Recording Inward...' : 'Confirm & Inward Stock'}</span>
+                  <span>
+                    {isSubmitting
+                      ? (editingPurchaseId ? 'Updating Purchase Bill...' : 'Recording Inward...')
+                      : (editingPurchaseId ? 'Update Purchase Bill' : 'Confirm & Inward Stock')}
+                  </span>
                 </button>
               </div>
             </div>
@@ -746,297 +877,419 @@ export const PurchaseEntryView: React.FC = () => {
               <span className="text-[10px] text-[#AAB4C5] block font-mono">Inward: {formatCurrency(grandTotal)}</span>
               <span className="text-xs font-mono font-bold text-rose-400">Due: {formatCurrency(amountDue)}</span>
             </div>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="flex-1 py-2.5 px-4 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold shadow-lg transition active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
-            >
-              <CheckCircle2 size={16} strokeWidth={2.5} />
-              <span>{isSubmitting ? 'Recording...' : 'Inward Stock'}</span>
-            </button>
+            <div className="flex items-center gap-2">
+              {editingPurchaseId && (
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="py-2.5 px-3 bg-[#1E2B45] text-[#AAB4C5] rounded-xl text-xs font-semibold shrink-0"
+                >
+                  Cancel
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="flex-1 py-2.5 px-4 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold shadow-lg transition active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                <CheckCircle2 size={16} strokeWidth={2.5} />
+                <span>
+                  {isSubmitting
+                    ? (editingPurchaseId ? 'Updating...' : 'Recording...')
+                    : (editingPurchaseId ? 'Update Inward' : 'Inward Stock')}
+                </span>
+              </button>
+            </div>
           </div>
         </form>
-      )}
 
-      {/* SUB-TAB 2: PURCHASE REGISTER */}
-      {activeSubTab === 'register' && (
-        <div className="space-y-6">
-          {/* Metrics bar */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4">
-              <span className="text-xs text-[#AAB4C5]">Total Purchases (Active)</span>
-              <p className="text-lg font-bold font-mono text-[#F5F3EE] mt-1">
-                {formatCurrency(registerStats.totalInward)}
-              </p>
-            </div>
-            <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4">
-              <span className="text-xs text-[#AAB4C5]">Total Paid to Suppliers</span>
-              <p className="text-lg font-bold font-mono text-emerald-400 mt-1">
-                {formatCurrency(registerStats.totalPaid)}
-              </p>
-            </div>
-            <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4">
-              <span className="text-xs text-[#AAB4C5]">Outstanding Supplier Payables</span>
-              <p className="text-lg font-bold font-mono text-rose-400 mt-1">
-                {formatCurrency(registerStats.totalDue)}
-              </p>
-            </div>
+      {/* ========================================================================= */}
+      {/* SECTION 2: PREVIOUS PURCHASES / PURCHASE HISTORY (ALL MONTHS & YEARS) */}
+      {/* ========================================================================= */}
+      <div className="pt-8 border-t border-[#1E2B45] space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h3 className="text-lg lg:text-xl font-serif font-bold text-gold-gradient tracking-wide flex items-center gap-2">
+              <ShoppingBag className="text-[#D6B36A]" size={20} />
+              <span>Previous Purchases / Purchase History</span>
+            </h3>
+            <p className="text-xs text-[#AAB4C5] mt-0.5">
+              Complete history of supplier inwards across all months and years. Inspect purchase details, edit bills, or safely delete entries.
+            </p>
           </div>
+          <span className="text-xs font-mono px-3 py-1 bg-[#111B2E] border border-[#1E2B45] rounded-full text-[#D6B36A] self-start sm:self-auto font-semibold">
+            {filteredPurchases.length} {filteredPurchases.length === 1 ? 'Bill' : 'Bills'} Found
+          </span>
+        </div>
 
-          {/* Search & Filter Bar */}
-          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 flex flex-col sm:flex-row gap-3 items-center justify-between">
-            <div className="relative w-full sm:w-80">
+        {/* Metrics Strip */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-3.5">
+            <span className="text-[11px] text-[#AAB4C5] block">Total Inward Bills ({registerStats.count})</span>
+            <span className="text-base lg:text-lg font-bold font-mono text-[#F5F3EE] mt-0.5 block">
+              {formatCurrency(registerStats.totalInward)}
+            </span>
+          </div>
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-3.5">
+            <span className="text-[11px] text-[#AAB4C5] block">Total Paid to Suppliers</span>
+            <span className="text-base lg:text-lg font-bold font-mono text-emerald-400 mt-0.5 block">
+              {formatCurrency(registerStats.totalPaid)}
+            </span>
+          </div>
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-3.5">
+            <span className="text-[11px] text-[#AAB4C5] block">Outstanding Supplier Payables</span>
+            <span className="text-base lg:text-lg font-bold font-mono text-rose-400 mt-0.5 block">
+              {formatCurrency(registerStats.totalDue)}
+            </span>
+          </div>
+        </div>
+
+        {/* Search & Filter Toolbar */}
+        <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 space-y-3">
+          <div className="flex flex-col lg:flex-row gap-3">
+            {/* Search Input */}
+            <div className="relative flex-1">
               <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#7A8699]" />
               <input
                 type="text"
-                placeholder="Search supplier, invoice #, GSTIN..."
+                placeholder="Search supplier, bill #, GSTIN, or jewellery item..."
                 value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
+                onChange={e => {
+                  setSearchTerm(e.target.value);
+                  setDisplayLimit(15);
+                }}
                 className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg pl-9 pr-3 py-2 text-xs text-[#F5F3EE] placeholder-[#7A8699] focus:outline-none focus:border-[#D6B36A] transition"
               />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#7A8699] hover:text-[#F5F3EE]"
+                >
+                  <X size={14} />
+                </button>
+              )}
             </div>
 
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <span className="text-xs text-[#AAB4C5]">Status:</span>
+            {/* Month/Year Filter */}
+            <div className="w-full lg:w-48">
+              <select
+                value={monthFilter}
+                onChange={e => {
+                  setMonthFilter(e.target.value);
+                  setDisplayLimit(15);
+                }}
+                className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+              >
+                <option value="all">All Months & Years</option>
+                {availableMonths.map(m => (
+                  <option key={m} value={m}>
+                    {formatMonthLabel(m)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Status Filter */}
+            <div className="w-full lg:w-44">
               <select
                 value={statusFilter}
-                onChange={e => setStatusFilter(e.target.value)}
-                className="bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                onChange={e => {
+                  setStatusFilter(e.target.value);
+                  setDisplayLimit(15);
+                }}
+                className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
               >
                 <option value="all">All Statuses</option>
-                <option value="paid">Paid</option>
-                <option value="partially paid">Partially Paid</option>
-                <option value="unpaid">Unpaid</option>
+                <option value="Paid">Paid</option>
+                <option value="Partially Paid">Partially Paid</option>
+                <option value="Unpaid">Unpaid</option>
               </select>
             </div>
           </div>
 
-          {/* Mobile Cards View (sm:hidden) */}
-          <div className="sm:hidden space-y-3">
-            {filteredPurchases.length === 0 ? (
-              <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-8 text-center text-xs text-[#7A8699]">
-                No purchase inward entries found.
-              </div>
-            ) : (
-              filteredPurchases.map(p => {
-                const isExpanded = expandedPurchaseId === p.id;
-                return (
-                  <div key={p.id} className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 space-y-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <span className="font-semibold text-sm text-[#F5F3EE] block">{p.supplier_name}</span>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-xs font-mono text-[#D6B36A]">{p.supplier_invoice_number}</span>
-                          <span className="text-[10px] text-[#7A8699]">• {formatDate(p.purchase_date)}</span>
-                        </div>
-                      </div>
-                      <span
-                        className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
-                          p.payment_status === 'Paid'
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                            : p.payment_status === 'Partially Paid'
-                            ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                            : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                        }`}
-                      >
-                        {p.payment_status}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#1E2B45]/60 text-xs">
-                      <div>
-                        <span className="text-[10px] text-[#AAB4C5] block">Total Inward</span>
-                        <span className="font-mono font-bold text-[#F5F3EE]">{formatCurrency(p.grand_total)}</span>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-[10px] text-[#AAB4C5] block">Due to Supplier</span>
-                        <span className="font-mono font-bold text-rose-400">{formatCurrency(p.amount_due)}</span>
-                      </div>
-                    </div>
-
-                    {isExpanded && p.items && p.items.length > 0 && (
-                      <div className="pt-2 border-t border-[#1E2B45]/60 space-y-1.5 bg-[#0B1220]/50 p-2.5 rounded-lg">
-                        <span className="text-[10px] font-semibold text-[#D6B36A] uppercase tracking-wider block">Inward Items</span>
-                        {p.items.map((it, idx) => (
-                          <div key={idx} className="flex justify-between items-center text-xs">
-                            <span className="text-[#F5F3EE]">{it.item_name} × {it.quantity}</span>
-                            <span className="font-mono text-[#AAB4C5]">{formatCurrency(it.line_total)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-between pt-2 border-t border-[#1E2B45]/60">
-                      <button
-                        onClick={() => setExpandedPurchaseId(isExpanded ? null : p.id)}
-                        className="text-xs text-[#AAB4C5] hover:text-[#F5F3EE] flex items-center gap-1"
-                      >
-                        {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                        <span>{isExpanded ? 'Hide Items' : `View Items (${p.items?.length || 0})`}</span>
-                      </button>
-                      <button
-                        onClick={() => setPurchaseToDelete(p)}
-                        className="px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition"
-                      >
-                        <Trash2 size={13} />
-                        <span>Delete Bill</span>
-                      </button>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          {/* Desktop Purchases Table (hidden sm:block) */}
-          <div className="hidden sm:block bg-[#111B2E] border border-[#1E2B45] rounded-xl overflow-hidden shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="bg-[#0E1726] border-b border-[#1E2B45] text-[#AAB4C5]">
-                    <th className="py-3 px-4 font-semibold">Date</th>
-                    <th className="py-3 px-4 font-semibold">Supplier / Karigar</th>
-                    <th className="py-3 px-4 font-semibold">Supplier Invoice #</th>
-                    <th className="py-3 px-4 font-semibold text-right">Taxable (₹)</th>
-                    <th className="py-3 px-4 font-semibold text-right">GST (₹)</th>
-                    <th className="py-3 px-4 font-semibold text-right">Total (₹)</th>
-                    <th className="py-3 px-4 font-semibold text-right">Due (₹)</th>
-                    <th className="py-3 px-4 font-semibold text-center">Status</th>
-                    <th className="py-3 px-4 font-semibold text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1E2B45]/60">
-                  {filteredPurchases.length === 0 ? (
-                    <tr>
-                      <td colSpan={9} className="py-8 text-center text-xs text-[#7A8699]">
-                        No purchase inward entries found.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredPurchases.map(p => {
-                      const isExpanded = expandedPurchaseId === p.id;
-                      return (
-                        <React.Fragment key={p.id}>
-                          <tr className="hover:bg-[#16233B]/50 transition">
-                            <td className="py-3 px-4 text-[#AAB4C5] whitespace-nowrap">
-                              {formatDate(p.purchase_date)}
-                            </td>
-                            <td className="py-3 px-4">
-                              <span className="font-semibold text-[#F5F3EE] block">{p.supplier_name}</span>
-                              {p.supplier_gstin && (
-                                <span className="text-[10px] text-[#7A8699] font-mono block">
-                                  GST: {p.supplier_gstin}
-                                </span>
-                              )}
-                            </td>
-                            <td className="py-3 px-4 font-mono text-[#D6B36A]">
-                              {p.supplier_invoice_number}
-                            </td>
-                            <td className="py-3 px-4 text-right font-mono text-[#AAB4C5]">
-                              {formatCurrency(p.total_taxable)}
-                            </td>
-                            <td className="py-3 px-4 text-right font-mono text-amber-400">
-                              {formatCurrency(p.total_gst)}
-                            </td>
-                            <td className="py-3 px-4 text-right font-mono font-bold text-[#F5F3EE]">
-                              {formatCurrency(p.grand_total)}
-                            </td>
-                            <td className="py-3 px-4 text-right font-mono text-rose-400 font-semibold">
-                              {formatCurrency(p.amount_due)}
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <span
-                                className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold ${
-                                  p.payment_status === 'Paid'
-                                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                    : p.payment_status === 'Partially Paid'
-                                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                    : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                                }`}
-                              >
-                                {p.payment_status}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <div className="flex items-center justify-center gap-1.5">
-                                <button
-                                  onClick={() => setExpandedPurchaseId(isExpanded ? null : p.id)}
-                                  className="p-1.5 rounded-lg hover:bg-[#1E2B45] text-[#AAB4C5] hover:text-[#F5F3EE] transition"
-                                  title="Toggle Items"
-                                >
-                                  {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                                </button>
-                                <button
-                                  onClick={() => setPurchaseToDelete(p)}
-                                  className="p-1.5 rounded-lg hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 transition"
-                                  title="Delete Purchase Bill"
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-
-                          {/* Expanded Items Drawer */}
-                          {isExpanded && (
-                            <tr className="bg-[#0B1220]/70">
-                              <td colSpan={9} className="p-4 border-y border-[#1E2B45]">
-                                <div className="space-y-2">
-                                  <div className="flex items-center justify-between text-xs text-[#D6B36A] font-semibold">
-                                    <span>Purchased Items Breakdown</span>
-                                    <span>{p.is_interstate ? 'Inter-state (IGST)' : 'Intra-state (CGST + SGST)'}</span>
-                                  </div>
-                                  <table className="w-full text-left text-xs bg-[#111B2E] rounded-lg overflow-hidden border border-[#1E2B45]/60">
-                                    <thead>
-                                      <tr className="border-b border-[#1E2B45] text-[#AAB4C5]">
-                                        <th className="py-1.5 px-3">Item Name</th>
-                                        <th className="py-1.5 px-3 text-right">Quantity</th>
-                                        <th className="py-1.5 px-3 text-right">Unit Rate</th>
-                                        <th className="py-1.5 px-3 text-right">GST Rate</th>
-                                        <th className="py-1.5 px-3 text-right">Taxable Amount</th>
-                                        <th className="py-1.5 px-3 text-right">Total Amount</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-[#1E2B45]/40 font-mono">
-                                      {p.items && p.items.length > 0 ? (
-                                        p.items.map((it, i) => (
-                                          <tr key={i}>
-                                            <td className="py-1.5 px-3 font-sans text-[#F5F3EE]">{it.item_name}</td>
-                                            <td className="py-1.5 px-3 text-right">{it.quantity}</td>
-                                            <td className="py-1.5 px-3 text-right">{formatCurrency(it.unit_purchase_rate)}</td>
-                                            <td className="py-1.5 px-3 text-right">{it.gst_rate}%</td>
-                                            <td className="py-1.5 px-3 text-right">{formatCurrency(it.taxable_amount)}</td>
-                                            <td className="py-1.5 px-3 text-right font-semibold text-[#D6B36A]">{formatCurrency(it.line_total)}</td>
-                                          </tr>
-                                        ))
-                                      ) : (
-                                        <tr>
-                                          <td colSpan={6} className="py-2 text-center text-[#7A8699]">
-                                            No item details recorded for this purchase.
-                                          </td>
-                                        </tr>
-                                      )}
-                                    </tbody>
-                                  </table>
-                                  {p.notes && (
-                                    <p className="text-[11px] text-[#AAB4C5] italic pt-1">
-                                      Notes: {p.notes}
-                                    </p>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
+          {/* Custom Date Range Filter */}
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#1E2B45]/60 text-xs">
+            <span className="text-[#AAB4C5] text-[11px] font-medium flex items-center gap-1">
+              <Calendar size={13} className="text-[#D6B36A]" />
+              <span>Custom Date Range:</span>
+            </span>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="date"
+                value={purchaseStartDate}
+                onChange={e => {
+                  setPurchaseStartDate(e.target.value);
+                  setDisplayLimit(15);
+                }}
+                className="bg-[#0B1220] border border-[#1E2B45] rounded-md px-2 py-1 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+              />
+              <span className="text-[#7A8699]">to</span>
+              <input
+                type="date"
+                value={purchaseEndDate}
+                onChange={e => {
+                  setPurchaseEndDate(e.target.value);
+                  setDisplayLimit(15);
+                }}
+                className="bg-[#0B1220] border border-[#1E2B45] rounded-md px-2 py-1 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+              />
+              {(purchaseStartDate || purchaseEndDate) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPurchaseStartDate('');
+                    setPurchaseEndDate('');
+                  }}
+                  className="px-2 py-1 bg-[#1E2B45] text-[#AAB4C5] hover:text-[#F5F3EE] rounded-md text-[11px]"
+                >
+                  Clear Range
+                </button>
+              )}
             </div>
           </div>
         </div>
-      )}
+
+        {/* Mobile View: Cards (< sm) */}
+        <div className="sm:hidden space-y-3">
+          {visiblePurchases.length === 0 ? (
+            <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-8 text-center text-xs text-[#7A8699]">
+              No purchase entries found matching your filters.
+            </div>
+          ) : (
+            visiblePurchases.map(p => (
+              <div key={p.id} className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <span className="font-semibold text-sm text-[#F5F3EE] block">
+                      {p.supplier_name}
+                    </span>
+                    <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                      <span className="text-xs font-mono font-bold text-[#D6B36A]">
+                        #{p.supplier_invoice_number}
+                      </span>
+                      <span className="text-[10px] text-[#7A8699]">
+                        • {formatDate(p.purchase_date)}
+                      </span>
+                      {p.supplier_gstin && (
+                        <span className="text-[10px] text-[#7A8699] font-mono">
+                          GST: {p.supplier_gstin}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span
+                    className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                      p.payment_status === 'Paid'
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : p.payment_status === 'Partially Paid'
+                        ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                        : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                    }`}
+                  >
+                    {p.payment_status}
+                  </span>
+                </div>
+
+                {/* Items Summary */}
+                {p.items && p.items.length > 0 && (
+                  <div className="bg-[#0B1220]/60 p-2 rounded-lg border border-[#1E2B45]/50 space-y-1">
+                    {p.items.map((it, idx) => (
+                      <div key={idx} className="flex justify-between items-center text-xs">
+                        <span className="text-[#AAB4C5] truncate max-w-[65%]">
+                          {it.item_name} <span className="font-mono text-[#F5F3EE]">× {it.quantity}</span>
+                        </span>
+                        <span className="font-mono text-[#F5F3EE] text-[11px]">
+                          {formatCurrency(it.line_total)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Financial Figures */}
+                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[#1E2B45]/60 text-xs">
+                  <div>
+                    <span className="text-[10px] text-[#AAB4C5] block">Total Inward</span>
+                    <span className="font-mono font-bold text-[#F5F3EE]">
+                      {formatCurrency(p.grand_total)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#AAB4C5] block">Paid</span>
+                    <span className="font-mono font-bold text-emerald-400">
+                      {formatCurrency(p.amount_paid || 0)}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] text-[#AAB4C5] block">Due</span>
+                    <span className={`font-mono font-bold ${p.amount_due > 0 ? 'text-rose-400' : 'text-[#7A8699]'}`}>
+                      {formatCurrency(p.amount_due || 0)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#1E2B45]/60">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPurchaseForModal(p)}
+                    className="flex-1 py-1.5 px-2 bg-[#1E2B45] hover:bg-[#253655] text-[#D6B36A] rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition"
+                  >
+                    <Eye size={13} />
+                    <span>View</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleStartEdit(p)}
+                    className="flex-1 py-1.5 px-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition"
+                  >
+                    <Edit3 size={13} />
+                    <span>Edit</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPurchaseToDelete(p)}
+                    className="py-1.5 px-2.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Desktop View: Table (hidden sm:block) */}
+        <div className="hidden sm:block bg-[#111B2E] border border-[#1E2B45] rounded-xl overflow-hidden shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="bg-[#0E1726] border-b border-[#1E2B45] text-[#AAB4C5]">
+                  <th className="py-3 px-4 font-semibold">Date</th>
+                  <th className="py-3 px-4 font-semibold">Supplier / Karigar</th>
+                  <th className="py-3 px-4 font-semibold">Supplier Bill #</th>
+                  <th className="py-3 px-4 font-semibold">Purchased Items</th>
+                  <th className="py-3 px-4 font-semibold text-right">Total (₹)</th>
+                  <th className="py-3 px-4 font-semibold text-right">Paid (₹)</th>
+                  <th className="py-3 px-4 font-semibold text-right">Due (₹)</th>
+                  <th className="py-3 px-4 font-semibold text-center">Status</th>
+                  <th className="py-3 px-4 font-semibold text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#1E2B45]/60">
+                {visiblePurchases.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="py-8 text-center text-xs text-[#7A8699]">
+                      No purchase inward entries matching your filters.
+                    </td>
+                  </tr>
+                ) : (
+                  visiblePurchases.map(p => (
+                    <tr key={p.id} className="hover:bg-[#16233B]/50 transition">
+                      <td className="py-3 px-4 text-[#AAB4C5] whitespace-nowrap">
+                        {formatDate(p.purchase_date)}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="font-semibold text-[#F5F3EE] block">
+                          {p.supplier_name}
+                        </span>
+                        {p.supplier_gstin && (
+                          <span className="text-[10px] text-[#7A8699] font-mono block">
+                            GST: {p.supplier_gstin}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 font-mono font-bold text-[#D6B36A] whitespace-nowrap">
+                        #{p.supplier_invoice_number}
+                      </td>
+                      <td className="py-3 px-4 max-w-xs">
+                        <div className="space-y-0.5">
+                          {p.items && p.items.length > 0 ? (
+                            p.items.map((it, idx) => (
+                              <div key={idx} className="text-[#AAB4C5] truncate">
+                                <span className="text-[#F5F3EE] font-medium">{it.item_name}</span>{' '}
+                                <span className="font-mono text-[11px]">({it.quantity} pcs @ {formatCurrency(it.unit_purchase_rate)})</span>
+                              </div>
+                            ))
+                          ) : (
+                            <span className="text-[#7A8699] italic">Stock Inward</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono font-bold text-[#F5F3EE] whitespace-nowrap">
+                        {formatCurrency(p.grand_total)}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-emerald-400 whitespace-nowrap">
+                        {formatCurrency(p.amount_paid || 0)}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono font-semibold whitespace-nowrap">
+                        <span className={p.amount_due > 0 ? 'text-rose-400' : 'text-[#7A8699]'}>
+                          {formatCurrency(p.amount_due || 0)}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-center whitespace-nowrap">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold ${
+                            p.payment_status === 'Paid'
+                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                              : p.payment_status === 'Partially Paid'
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                              : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                          }`}
+                        >
+                          {p.payment_status}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-center whitespace-nowrap">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPurchaseForModal(p)}
+                            className="p-1.5 rounded-lg bg-[#1E2B45] hover:bg-[#253655] text-[#D6B36A] hover:text-[#e4c478] transition"
+                            title="View Inward Details"
+                          >
+                            <Eye size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleStartEdit(p)}
+                            className="p-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 hover:text-amber-200 transition"
+                            title="Edit Purchase Bill"
+                          >
+                            <Edit3 size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPurchaseToDelete(p)}
+                            className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 transition"
+                            title="Delete & Revert Stock"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Load More Button */}
+        {filteredPurchases.length > displayLimit && (
+          <div className="text-center pt-2">
+            <button
+              type="button"
+              onClick={() => setDisplayLimit(prev => prev + 15)}
+              className="px-6 py-2.5 bg-[#111B2E] hover:bg-[#16233B] border border-[#1E2B45] rounded-xl text-xs font-semibold text-[#D6B36A] transition active:scale-95 shadow-sm"
+            >
+              Load More Purchases ({filteredPurchases.length - displayLimit} remaining)
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* DELETE PURCHASE CONFIRMATION MODAL */}
       {purchaseToDelete && (
@@ -1108,6 +1361,153 @@ export const PurchaseEntryView: React.FC = () => {
               >
                 <Trash2 size={14} />
                 <span>{isDeleting ? 'Deleting...' : 'Delete & Revert Stock'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* VIEW PURCHASE DETAILS MODAL */}
+      {selectedPurchaseForModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl max-w-2xl w-full p-6 space-y-5 shadow-2xl text-left max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-[#1E2B45]">
+              <div>
+                <h3 className="text-base font-bold text-[#F5F3EE] flex items-center gap-2">
+                  <ShoppingBag size={18} className="text-[#D6B36A]" />
+                  <span>Purchase Inward Bill #{selectedPurchaseForModal.supplier_invoice_number}</span>
+                </h3>
+                <span className="text-xs text-[#AAB4C5]">
+                  Recorded on {formatDate(selectedPurchaseForModal.purchase_date)}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedPurchaseForModal(null)}
+                className="p-1.5 rounded-lg text-[#AAB4C5] hover:text-[#F5F3EE] hover:bg-[#1E2B45] transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Supplier & Tax Header */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-[#0B1220] p-3.5 rounded-xl border border-[#1E2B45] text-xs">
+              <div>
+                <span className="text-[10px] text-[#AAB4C5] block">Supplier / Karigar</span>
+                <span className="font-semibold text-[#F5F3EE] block mt-0.5">
+                  {selectedPurchaseForModal.supplier_name}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-[#AAB4C5] block">Supplier GSTIN</span>
+                <span className="font-mono text-[#D6B36A] block mt-0.5">
+                  {selectedPurchaseForModal.supplier_gstin || 'Unregistered'}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-[#AAB4C5] block">Tax Regime</span>
+                <span className="text-[#F5F3EE] block mt-0.5">
+                  {selectedPurchaseForModal.is_interstate ? 'Interstate (IGST)' : 'Intra-state (CGST+SGST)'}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-[#AAB4C5] block">Payment Status</span>
+                <span
+                  className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold mt-0.5 ${
+                    selectedPurchaseForModal.payment_status === 'Paid'
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                      : selectedPurchaseForModal.payment_status === 'Partially Paid'
+                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                      : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                  }`}
+                >
+                  {selectedPurchaseForModal.payment_status}
+                </span>
+              </div>
+            </div>
+
+            {/* Line items table */}
+            <div className="space-y-2">
+              <span className="text-xs font-semibold text-[#D6B36A] uppercase tracking-wider block">
+                Purchased Jewellery Items
+              </span>
+              <div className="border border-[#1E2B45] rounded-xl overflow-hidden bg-[#0B1220]">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-[#0E1726] border-b border-[#1E2B45] text-[#AAB4C5]">
+                      <th className="py-2.5 px-3">Item Name</th>
+                      <th className="py-2.5 px-3 text-right">Quantity</th>
+                      <th className="py-2.5 px-3 text-right">Unit Rate (₹)</th>
+                      <th className="py-2.5 px-3 text-right">Taxable (₹)</th>
+                      <th className="py-2.5 px-3 text-right">GST (₹)</th>
+                      <th className="py-2.5 px-3 text-right">Total (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#1E2B45]/50 font-mono">
+                    {selectedPurchaseForModal.items?.map((it, idx) => (
+                      <tr key={idx}>
+                        <td className="py-2 px-3 font-sans text-[#F5F3EE]">{it.item_name}</td>
+                        <td className="py-2 px-3 text-right text-[#F5F3EE]">{it.quantity}</td>
+                        <td className="py-2 px-3 text-right text-[#AAB4C5]">{formatCurrency(it.unit_purchase_rate)}</td>
+                        <td className="py-2 px-3 text-right text-[#AAB4C5]">{formatCurrency(it.taxable_amount)}</td>
+                        <td className="py-2 px-3 text-right text-amber-400">{formatCurrency(it.gst_amount)} ({it.gst_rate}%)</td>
+                        <td className="py-2 px-3 text-right font-bold text-[#F5F3EE]">{formatCurrency(it.line_total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Financial summary breakdown */}
+            <div className="bg-[#0B1220] p-4 rounded-xl border border-[#1E2B45] space-y-2 text-xs">
+              <div className="flex justify-between text-[#AAB4C5]">
+                <span>Taxable Value:</span>
+                <span className="font-mono text-[#F5F3EE]">{formatCurrency(selectedPurchaseForModal.total_taxable)}</span>
+              </div>
+              <div className="flex justify-between text-[#AAB4C5]">
+                <span>Input GST:</span>
+                <span className="font-mono text-amber-400">{formatCurrency(selectedPurchaseForModal.total_gst)}</span>
+              </div>
+              <div className="pt-2 border-t border-[#1E2B45] flex justify-between font-bold text-sm">
+                <span className="text-[#D6B36A]">Total Inward Bill Amount:</span>
+                <span className="font-mono text-[#D6B36A]">{formatCurrency(selectedPurchaseForModal.grand_total)}</span>
+              </div>
+              <div className="flex justify-between pt-1 text-[#AAB4C5]">
+                <span>Amount Paid:</span>
+                <span className="font-mono text-emerald-400 font-semibold">{formatCurrency(selectedPurchaseForModal.amount_paid || 0)}</span>
+              </div>
+              <div className="flex justify-between font-semibold">
+                <span className="text-rose-400">Balance Due to Supplier:</span>
+                <span className="font-mono text-rose-400">{formatCurrency(selectedPurchaseForModal.amount_due || 0)}</span>
+              </div>
+              {selectedPurchaseForModal.notes && (
+                <div className="pt-2 border-t border-[#1E2B45] text-[11px] text-[#AAB4C5]">
+                  <span className="font-semibold text-[#F5F3EE]">Notes: </span>
+                  {selectedPurchaseForModal.notes}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const p = selectedPurchaseForModal;
+                  setSelectedPurchaseForModal(null);
+                  handleStartEdit(p);
+                }}
+                className="px-4 py-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
+              >
+                <Edit3 size={14} />
+                <span>Edit This Bill</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedPurchaseForModal(null)}
+                className="px-5 py-2 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold transition"
+              >
+                Close
               </button>
             </div>
           </div>

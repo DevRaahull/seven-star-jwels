@@ -639,16 +639,26 @@ class StorageService {
     const itemMap = new Map(items.map(i => [i.id, i]));
     const now = new Date().toISOString();
 
-    // Revert inward stock from items
+    // Verify reversing inward stock will not produce negative inventory
     if (purchase.items && purchase.items.length > 0) {
       for (const line of purchase.items) {
-        let item: Item | undefined;
-        if (line.item_id && itemMap.has(line.item_id)) {
-          item = itemMap.get(line.item_id);
-        } else {
+        let item: Item | undefined = line.item_id ? itemMap.get(line.item_id) : undefined;
+        if (!item) {
           item = items.find(i => i.name.toLowerCase().trim() === line.item_name.toLowerCase().trim());
         }
+        if (item && item.current_stock < line.quantity) {
+          throw new Error(
+            `Cannot delete purchase bill: ${line.quantity - item.current_stock} pieces of "${item.name}" have already been sold or transferred. Reversing this bill would cause negative stock (${item.current_stock - line.quantity}).`
+          );
+        }
+      }
 
+      // Revert inward stock from items
+      for (const line of purchase.items) {
+        let item: Item | undefined = line.item_id ? itemMap.get(line.item_id) : undefined;
+        if (!item) {
+          item = items.find(i => i.name.toLowerCase().trim() === line.item_name.toLowerCase().trim());
+        }
         if (item) {
           item.current_stock = Math.max(0, item.current_stock - line.quantity);
           item.updated_at = now;
@@ -667,6 +677,175 @@ class StorageService {
       await client.from('purchases').delete().eq('id', purchaseId);
       await client.from('items').upsert(items);
     }
+  }
+
+  async updatePurchase(
+    purchaseId: string,
+    purchaseData: {
+      purchase_date: string;
+      supplier_name: string;
+      supplier_gstin?: string;
+      supplier_invoice_number: string;
+      is_interstate?: boolean;
+      notes?: string;
+      amount_paid?: number;
+      items: Array<{
+        item_id?: string;
+        item_name: string;
+        category?: string;
+        quantity: number;
+        unit_purchase_rate: number;
+        gst_rate?: number;
+      }>;
+    }
+  ): Promise<Purchase> {
+    const purchases = await this.getPurchases();
+    const purchaseIndex = purchases.findIndex(p => p.id === purchaseId);
+    if (purchaseIndex === -1) throw new Error('Purchase bill not found');
+
+    const existingPurchase = purchases[purchaseIndex];
+    const allItems = await this.getItems();
+    const itemMap = new Map(allItems.map(i => [i.id, i]));
+    const now = new Date().toISOString();
+
+    // 1. Temporarily revert previous purchase inward stock
+    if (existingPurchase.items && existingPurchase.items.length > 0) {
+      for (const line of existingPurchase.items) {
+        let it = line.item_id ? itemMap.get(line.item_id) : undefined;
+        if (!it) {
+          it = allItems.find(i => i.name.toLowerCase().trim() === line.item_name.toLowerCase().trim());
+        }
+        if (it) {
+          it.current_stock -= line.quantity;
+        }
+      }
+    }
+
+    // 2. Validate that reverting + applying new stock doesn't produce negative stock
+    for (const line of purchaseData.items) {
+      let it = line.item_id ? itemMap.get(line.item_id) : undefined;
+      if (!it) {
+        it = allItems.find(i => i.name.toLowerCase().trim() === line.item_name.toLowerCase().trim());
+      }
+      if (it && (it.current_stock + line.quantity < 0)) {
+        // Restore items to original before throwing
+        if (existingPurchase.items) {
+          for (const oldLine of existingPurchase.items) {
+            let oit = oldLine.item_id ? itemMap.get(oldLine.item_id) : undefined;
+            if (oit) oit.current_stock += oldLine.quantity;
+          }
+        }
+        throw new Error(
+          `Cannot update purchase: Reversing original stock would cause negative inventory for "${it.name}". Some pieces were already sold or moved.`
+        );
+      }
+    }
+
+    // 3. Process new purchase line items & calculate WAC + new stock
+    let totalTaxable = 0;
+    let totalGst = 0;
+    const purchaseLines: PurchaseItem[] = [];
+
+    for (const line of purchaseData.items) {
+      const qty = Number(line.quantity) || 0;
+      const rate = Number(line.unit_purchase_rate) || 0;
+      const gstRate = line.gst_rate !== undefined ? Number(line.gst_rate) : 3;
+
+      const lineTaxable = Math.round(qty * rate * 100) / 100;
+      const lineGst = Math.round(lineTaxable * (gstRate / 100) * 100) / 100;
+      const lineTotal = Math.round((lineTaxable + lineGst) * 100) / 100;
+
+      totalTaxable += lineTaxable;
+      totalGst += lineGst;
+
+      let matchedItem = line.item_id ? itemMap.get(line.item_id) : undefined;
+      if (!matchedItem) {
+        matchedItem = allItems.find(i => i.name.toLowerCase().trim() === line.item_name.toLowerCase().trim());
+      }
+
+      if (!matchedItem) {
+        matchedItem = {
+          id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+          name: line.item_name.trim(),
+          category: line.category || 'General',
+          purchase_rate: rate,
+          default_sale_rate: Math.round(rate * 1.35 * 100) / 100,
+          opening_stock: 0,
+          current_stock: qty,
+          low_stock_threshold: 5,
+          is_archived: false,
+          created_at: now,
+          updated_at: now
+        };
+        allItems.push(matchedItem);
+        itemMap.set(matchedItem.id, matchedItem);
+      } else {
+        // WAC update
+        const currentStock = Math.max(0, matchedItem.current_stock);
+        const currentRate = Number(matchedItem.purchase_rate) || 0;
+        let newWeightedCost = rate;
+        if (currentStock > 0) {
+          newWeightedCost = ((currentStock * currentRate) + (qty * rate)) / (currentStock + qty);
+        }
+        matchedItem.purchase_rate = Math.round(newWeightedCost * 100) / 100;
+        matchedItem.current_stock += qty;
+        matchedItem.updated_at = now;
+      }
+
+      purchaseLines.push({
+        id: `pitem-${purchaseId}-${purchaseLines.length + 1}`,
+        purchase_id: purchaseId,
+        item_id: matchedItem.id,
+        item_name: matchedItem.name,
+        quantity: qty,
+        unit_purchase_rate: rate,
+        gst_rate: gstRate,
+        taxable_amount: lineTaxable,
+        gst_amount: lineGst,
+        line_total: lineTotal
+      });
+    }
+
+    const grandTotal = Math.round((totalTaxable + totalGst) * 100) / 100;
+    const amountPaid = Math.min(grandTotal, Number(purchaseData.amount_paid) || 0);
+    const amountDue = Math.max(0, Math.round((grandTotal - amountPaid) * 100) / 100);
+
+    let paymentStatus: 'Paid' | 'Partially Paid' | 'Unpaid' = 'Paid';
+    if (amountPaid <= 0) paymentStatus = 'Unpaid';
+    else if (amountPaid < grandTotal) paymentStatus = 'Partially Paid';
+
+    const updatedPurchase: Purchase = {
+      ...existingPurchase,
+      purchase_date: purchaseData.purchase_date,
+      supplier_name: purchaseData.supplier_name.trim(),
+      supplier_gstin: purchaseData.supplier_gstin?.trim() || undefined,
+      supplier_invoice_number: purchaseData.supplier_invoice_number.trim(),
+      is_interstate: !!purchaseData.is_interstate,
+      total_taxable: totalTaxable,
+      total_gst: totalGst,
+      grand_total: grandTotal,
+      payment_status: paymentStatus,
+      amount_paid: amountPaid,
+      amount_due: amountDue,
+      notes: purchaseData.notes?.trim() || undefined,
+      updated_at: now,
+      items: purchaseLines
+    };
+
+    // Save updated items & purchases
+    this.saveToLocal(STORAGE_KEYS.ITEMS, allItems);
+    purchases[purchaseIndex] = updatedPurchase;
+    this.saveToLocal(STORAGE_KEYS.PURCHASES, purchases);
+
+    const client = getSupabaseClient();
+    if (client) {
+      await client.from('purchase_items').delete().eq('purchase_id', purchaseId);
+      await client.from('purchase_items').insert(purchaseLines);
+      await client.from('purchases').update(updatedPurchase).eq('id', purchaseId);
+      await client.from('items').upsert(allItems);
+    }
+
+    return updatedPurchase;
   }
 
   // --- WHOLESALE SALES & BILLING ---
@@ -1062,6 +1241,258 @@ class StorageService {
     const client = getSupabaseClient();
     if (client) {
       await client.from('sales').update({ status: 'voided', void_reason: reason, updated_at: now }).eq('id', saleId);
+      await client.from('items').upsert(items);
+    }
+  }
+
+  async updateSale(
+    saleId: string,
+    saleData: {
+      sale_date: string;
+      customer_name: string;
+      party_id?: string;
+      state_id?: string;
+      deduct_from_party_stock?: boolean;
+      customer_phone?: string;
+      is_interstate?: boolean;
+      payment_method?: string;
+      payment_option?: 'Advance Paid' | 'Due Balance' | 'Payment Complete';
+      amount_received?: number;
+      notes?: string;
+      items: Array<{
+        item_id: string;
+        item_name?: string;
+        quantity: number;
+        unit_sale_rate: number;
+        gst_rate?: number;
+      }>;
+    }
+  ): Promise<Sale> {
+    const sales = await this.getSales();
+    const saleIndex = sales.findIndex(s => s.id === saleId);
+    if (saleIndex === -1) throw new Error('Sale not found');
+
+    const existingSale = sales[saleIndex];
+    const allItems = await this.getItems();
+    const itemMap = new Map(allItems.map(i => [i.id, i]));
+    const now = new Date().toISOString();
+
+    // 1. Temporarily restore previous stock if old sale was active and not from consignment stock
+    const wasFromPartyStock = existingSale.deduct_from_party_stock;
+    if (existingSale.status !== 'voided' && !wasFromPartyStock && existingSale.items) {
+      for (const line of existingSale.items) {
+        if (line.item_id && itemMap.has(line.item_id)) {
+          const item = itemMap.get(line.item_id)!;
+          item.current_stock += line.quantity;
+        }
+      }
+    }
+
+    // 2. Validate that each new item has enough stock (if deducting from warehouse)
+    const isFromPartyStock = !!saleData.deduct_from_party_stock;
+    if (!isFromPartyStock) {
+      for (const line of saleData.items) {
+        const item = itemMap.get(line.item_id);
+        if (!item) throw new Error(`Item not found in inventory: ${line.item_name || line.item_id}`);
+        if (item.current_stock < line.quantity) {
+          // Re-deduct old items before throwing to keep memory clean
+          if (existingSale.status !== 'voided' && !wasFromPartyStock && existingSale.items) {
+            for (const oldLine of existingSale.items) {
+              if (oldLine.item_id && itemMap.has(oldLine.item_id)) {
+                itemMap.get(oldLine.item_id)!.current_stock -= oldLine.quantity;
+              }
+            }
+          }
+          throw new Error(
+            `Insufficient stock for "${item.name}". Available: ${item.current_stock} pcs, Requested: ${line.quantity} pcs.`
+          );
+        }
+      }
+
+      // Deduct new quantities
+      for (const line of saleData.items) {
+        const item = itemMap.get(line.item_id);
+        if (item) {
+          item.current_stock -= line.quantity;
+          item.updated_at = now;
+        }
+      }
+    }
+
+    // 3. Calculate financial totals
+    const isInterstate = Boolean(saleData.is_interstate);
+    let totalTaxable = 0;
+    let totalCgst = 0;
+    let totalSgst = 0;
+    let totalIgst = 0;
+    let totalCost = 0;
+    const saleLines: SaleItem[] = [];
+
+    // Map existing line items to preserve historical unit_cost snapshot if item was unchanged
+    const oldLineCostMap = new Map(existingSale.items?.map(i => [i.item_id, i.unit_cost]) || []);
+
+    for (const line of saleData.items) {
+      const item = itemMap.get(line.item_id);
+      const itemName = line.item_name || item?.name || 'Jewellery Item';
+      const qty = Number(line.quantity) || 1;
+      const rate = Number(line.unit_sale_rate) || 0;
+      // Preserve historical cost snapshot if existed, else fallback to current purchase rate
+      const unitCost = oldLineCostMap.has(line.item_id) ? oldLineCostMap.get(line.item_id)! : (item?.purchase_rate || 0);
+      const gstRate = line.gst_rate !== undefined ? Number(line.gst_rate) : 3;
+
+      const taxable = Math.round(qty * rate * 100) / 100;
+      const lineCost = Math.round(qty * unitCost * 100) / 100;
+      const lineProfit = Math.round((taxable - lineCost) * 100) / 100;
+
+      let cgst = 0;
+      let sgst = 0;
+      let igst = 0;
+      if (isInterstate) {
+        igst = Math.round(taxable * (gstRate / 100) * 100) / 100;
+      } else {
+        cgst = Math.round(taxable * (gstRate / 200) * 100) / 100;
+        sgst = Math.round(taxable * (gstRate / 200) * 100) / 100;
+      }
+      const lineGst = cgst + sgst + igst;
+      const lineTotal = Math.round((taxable + lineGst) * 100) / 100;
+
+      totalTaxable += taxable;
+      totalCgst += cgst;
+      totalSgst += sgst;
+      totalIgst += igst;
+      totalCost += lineCost;
+
+      saleLines.push({
+        id: `sitem-${saleId}-${saleLines.length + 1}`,
+        sale_id: saleId,
+        item_id: line.item_id,
+        item_name: itemName,
+        quantity: qty,
+        unit_cost: unitCost,
+        unit_sale_rate: rate,
+        gst_rate: gstRate,
+        taxable_amount: taxable,
+        cgst_amount: cgst,
+        sgst_amount: sgst,
+        igst_amount: igst,
+        gst_amount: lineGst,
+        line_total: lineTotal,
+        line_cost: lineCost,
+        line_profit: lineProfit
+      });
+    }
+
+    const totalGst = totalCgst + totalSgst + totalIgst;
+    const grandTotal = Math.round((totalTaxable + totalGst) * 100) / 100;
+    const grossProfit = Math.round((totalTaxable - totalCost) * 100) / 100;
+
+    // Handle payment
+    let amountReceived = 0;
+    let paymentStatus: PaymentStatus = 'Due Balance';
+    if (saleData.payment_option === 'Payment Complete') {
+      amountReceived = grandTotal;
+      paymentStatus = 'Payment Complete';
+    } else if (saleData.payment_option === 'Advance Paid') {
+      amountReceived = Math.min(grandTotal, Number(saleData.amount_received) || 0);
+      paymentStatus = amountReceived >= grandTotal ? 'Payment Complete' : 'Advance Paid';
+    } else {
+      amountReceived = Math.min(grandTotal, Number(saleData.amount_received) || 0);
+      paymentStatus = amountReceived >= grandTotal ? 'Payment Complete' : 'Due Balance';
+    }
+    const amountDue = Math.max(0, Math.round((grandTotal - amountReceived) * 100) / 100);
+
+    const payments: SalePayment[] = [];
+    if (amountReceived > 0) {
+      payments.push({
+        id: `pay-${saleId}-edit`,
+        sale_id: saleId,
+        payment_date: saleData.sale_date,
+        amount: amountReceived,
+        payment_method: saleData.payment_method || 'Cash',
+        notes: paymentStatus === 'Advance Paid' ? 'Advance Payment' : 'Recorded Payment',
+        created_at: now
+      });
+    }
+
+    const updatedSale: Sale = {
+      ...existingSale,
+      sale_date: saleData.sale_date,
+      customer_name: saleData.customer_name.trim(),
+      party_id: saleData.party_id || undefined,
+      state_id: saleData.state_id || undefined,
+      deduct_from_party_stock: isFromPartyStock,
+      customer_phone: saleData.customer_phone?.trim() || undefined,
+      is_interstate: isInterstate,
+      payment_method: saleData.payment_method || 'Cash',
+      payment_status: paymentStatus,
+      total_taxable: totalTaxable,
+      total_cgst: totalCgst,
+      total_sgst: totalSgst,
+      total_igst: totalIgst,
+      total_gst: totalGst,
+      grand_total: grandTotal,
+      total_cost: totalCost,
+      gross_profit: grossProfit,
+      amount_received: amountReceived,
+      amount_due: amountDue,
+      notes: saleData.notes?.trim() || undefined,
+      status: 'completed',
+      updated_at: now,
+      items: saleLines,
+      payments
+    };
+
+    // Save items & sale
+    this.saveToLocal(STORAGE_KEYS.ITEMS, allItems);
+    sales[saleIndex] = updatedSale;
+    this.saveToLocal(STORAGE_KEYS.SALES, sales);
+
+    const client = getSupabaseClient();
+    if (client) {
+      await client.from('sale_items').delete().eq('sale_id', saleId);
+      await client.from('sale_payments').delete().eq('sale_id', saleId);
+      await client.from('sales').update(updatedSale).eq('id', saleId);
+      await client.from('sale_items').insert(saleLines);
+      if (payments.length > 0) {
+        await client.from('sale_payments').insert(payments);
+      }
+      await client.from('items').upsert(allItems);
+    }
+
+    return updatedSale;
+  }
+
+  async deleteSale(saleId: string): Promise<void> {
+    const sales = await this.getSales();
+    const saleIndex = sales.findIndex(s => s.id === saleId);
+    if (saleIndex === -1) throw new Error('Sale not found');
+
+    const sale = sales[saleIndex];
+    const items = await this.getItems();
+    const itemMap = new Map(items.map(i => [i.id, i]));
+    const now = new Date().toISOString();
+
+    // 1. Revert inventory deduction (restore stock to warehouse) if sale wasn't already voided and wasn't from consignment
+    if (sale.status !== 'voided' && !sale.deduct_from_party_stock && sale.items) {
+      for (const line of sale.items) {
+        if (line.item_id && itemMap.has(line.item_id)) {
+          const item = itemMap.get(line.item_id)!;
+          item.current_stock += line.quantity;
+          item.updated_at = now;
+        }
+      }
+      this.saveToLocal(STORAGE_KEYS.ITEMS, items);
+    }
+
+    // 2. Remove sale completely from active sales list
+    sales.splice(saleIndex, 1);
+    this.saveToLocal(STORAGE_KEYS.SALES, sales);
+
+    const client = getSupabaseClient();
+    if (client) {
+      await client.from('sale_items').delete().eq('sale_id', saleId);
+      await client.from('sale_payments').delete().eq('sale_id', saleId);
+      await client.from('sales').delete().eq('id', saleId);
       await client.from('items').upsert(items);
     }
   }

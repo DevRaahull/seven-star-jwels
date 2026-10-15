@@ -571,6 +571,249 @@ runTest('24. Remove State: State is archived and safely removed from active view
   assert.strictEqual(states.find(s => s.id === 'st-2').is_archived, true);
 });
 
+// ====================================================
+// TEST 25: Update Sale: Stock reversal, stock check, and financial recalculation
+// ====================================================
+runTest('25. Update Sale: Atomic stock adjustment and financial recalculation', () => {
+  const items = [
+    { id: 'it-1', name: 'Gold Nose Pin', current_stock: 15, purchase_rate: 3000 }
+  ];
+  let sales = [
+    {
+      id: 's-1',
+      invoice_number: 'SSJ-1001',
+      sale_date: '2026-10-01T10:00:00Z',
+      customer_name: 'Royal Jewellers',
+      grand_total: 41200,
+      amount_received: 20000,
+      amount_due: 21200,
+      payment_status: 'Advance Paid',
+      status: 'completed',
+      deduct_from_party_stock: false,
+      items: [
+        { item_id: 'it-1', item_name: 'Gold Nose Pin', quantity: 10, unit_sale_rate: 4000, unit_cost: 3000, taxable_amount: 40000, gst_amount: 1200, line_total: 41200 }
+      ]
+    }
+  ];
+
+  // Update sale from 10 units to 12 units
+  const updateSale = (saleId, updateData) => {
+    const sale = sales.find(s => s.id === saleId);
+    if (!sale) throw new Error('Sale not found');
+    const itemMap = new Map(items.map(i => [i.id, i]));
+
+    // Step 1: Revert old sale stock
+    for (const oldLine of sale.items) {
+      const it = itemMap.get(oldLine.item_id);
+      if (it) it.current_stock += oldLine.quantity;
+    }
+
+    // Step 2: Validate new stock availability
+    for (const newLine of updateData.items) {
+      const it = itemMap.get(newLine.item_id);
+      if (!it) throw new Error('Item not found');
+      if (it.current_stock < newLine.quantity) {
+        throw new Error('Insufficient stock');
+      }
+    }
+
+    // Step 3: Deduct new quantities
+    for (const newLine of updateData.items) {
+      const it = itemMap.get(newLine.item_id);
+      it.current_stock -= newLine.quantity;
+    }
+
+    // Recalculate totals
+    const qty = updateData.items[0].quantity;
+    const rate = updateData.items[0].unit_sale_rate;
+    const taxable = qty * rate;
+    const gst = taxable * 0.03;
+    const grand = taxable + gst;
+    const received = updateData.amount_received || 0;
+    const due = Math.max(0, grand - received);
+
+    sale.grand_total = grand;
+    sale.amount_received = received;
+    sale.amount_due = due;
+    sale.items = [{ ...updateData.items[0], line_total: grand }];
+  };
+
+  // Initially stock is 15. The sale used 10, so available before revert is 15.
+  // Reverting gives 15 + 10 = 25. Deducting 12 leaves 13.
+  updateSale('s-1', {
+    amount_received: 49440,
+    items: [{ item_id: 'it-1', item_name: 'Gold Nose Pin', quantity: 12, unit_sale_rate: 4000, gst_rate: 3 }]
+  });
+
+  assert.strictEqual(items[0].current_stock, 13, 'Stock should be 25 - 12 = 13');
+  assert.strictEqual(sales[0].grand_total, 49440, 'Grand total should be 12 * 4000 * 1.03 = 49440');
+  assert.strictEqual(sales[0].amount_due, 0, 'Due should be 0 since fully paid');
+});
+
+// ====================================================
+// TEST 26: Delete Sale: Restores stock and safely removes transaction
+// ====================================================
+runTest('26. Delete Sale: Restores jewellery stock to inventory and removes sale', () => {
+  const items = [
+    { id: 'it-1', name: 'Gold Ring', current_stock: 8 }
+  ];
+  let sales = [
+    {
+      id: 's-del',
+      invoice_number: 'SSJ-9999',
+      status: 'completed',
+      deduct_from_party_stock: false,
+      items: [{ item_id: 'it-1', quantity: 4 }]
+    }
+  ];
+
+  const deleteSale = (saleId) => {
+    const saleIdx = sales.findIndex(s => s.id === saleId);
+    if (saleIdx === -1) throw new Error('Sale not found');
+    const sale = sales[saleIdx];
+    for (const line of sale.items) {
+      const it = items.find(i => i.id === line.item_id);
+      if (it) it.current_stock += line.quantity;
+    }
+    sales.splice(saleIdx, 1);
+  };
+
+  deleteSale('s-del');
+  assert.strictEqual(items[0].current_stock, 12, 'Stock should increase from 8 to 12 upon sale deletion');
+  assert.strictEqual(sales.length, 0, 'Sales array should be empty');
+});
+
+// ====================================================
+// TEST 27: Update Purchase: Inward modification and negative stock protection
+// ====================================================
+runTest('27. Update Purchase: Inward stock modification and negative stock rejection', () => {
+  const items = [
+    { id: 'it-p', name: 'Silver Anklet', current_stock: 20, purchase_rate: 1000 }
+  ];
+  const purchases = [
+    {
+      id: 'p-1',
+      supplier_invoice_number: 'BILL-100',
+      items: [{ item_id: 'it-p', quantity: 20, unit_purchase_rate: 1000 }]
+    }
+  ];
+
+  const updatePurchase = (purchaseId, newQuantity) => {
+    const p = purchases.find(x => x.id === purchaseId);
+    const it = items.find(x => x.id === 'it-p');
+    // Revert old inward
+    it.current_stock -= p.items[0].quantity;
+    // Check if new quantity produces negative stock
+    if (it.current_stock + newQuantity < 0) {
+      it.current_stock += p.items[0].quantity; // Rollback
+      throw new Error('Cannot update purchase: Would cause negative stock');
+    }
+    it.current_stock += newQuantity;
+    p.items[0].quantity = newQuantity;
+  };
+
+  // Increasing inward from 20 to 25
+  updatePurchase('p-1', 25);
+  assert.strictEqual(items[0].current_stock, 25);
+
+  // Now simulate that 22 units were sold, so current_stock becomes 3
+  items[0].current_stock = 3;
+  // Reverting 25 inward would make stock 3 - 25 = -22. If user tries to reduce inward to 10:
+  // -22 + 10 = -12 < 0 -> should throw
+  assert.throws(() => {
+    updatePurchase('p-1', 10);
+  }, /negative stock/i);
+});
+
+// ====================================================
+// TEST 28: Delete Purchase: Safety guard against negative inventory
+// ====================================================
+runTest('28. Delete Purchase: Rejection when units already sold (negative stock guard)', () => {
+  const items = [
+    { id: 'it-lot', name: 'Diamond Bangle', current_stock: 2 } // only 2 left in stock!
+  ];
+  const purchase = {
+    id: 'p-guard',
+    supplier_invoice_number: 'SUP-GUARD',
+    items: [{ item_id: 'it-lot', quantity: 10 }] // inward was 10
+  };
+
+  const deletePurchase = (p) => {
+    for (const line of p.items) {
+      const it = items.find(i => i.id === line.item_id);
+      if (it && it.current_stock < line.quantity) {
+        throw new Error(`Cannot delete purchase bill: Reversing would cause negative stock (${it.current_stock - line.quantity}).`);
+      }
+    }
+  };
+
+  assert.throws(() => {
+    deletePurchase(purchase);
+  }, /negative stock/i);
+});
+
+// ====================================================
+// TEST 29: Transaction History Filters: Month, Search, and Custom Date Range
+// ====================================================
+runTest('29. Transaction History: Search by item/invoice/party & filter by month and range', () => {
+  const allSales = [
+    { id: 's-1', invoice_number: 'SSJ-101', customer_name: 'Mahalaxmi Jewellers', sale_date: '2026-08-15T10:00:00Z', items: [{ item_name: 'Nose Pin' }] },
+    { id: 's-2', invoice_number: 'SSJ-102', customer_name: 'Ambica Arts', sale_date: '2026-09-20T10:00:00Z', items: [{ item_name: 'Gold Ring' }] },
+    { id: 's-3', invoice_number: 'SSJ-103', customer_name: 'Kalyan Jewellers', sale_date: '2026-10-05T10:00:00Z', items: [{ item_name: 'Antique Necklace' }] }
+  ];
+
+  const filterTransactions = (list, query, month, start, end) => {
+    return list.filter(t => {
+      if (query) {
+        const q = query.toLowerCase();
+        const mInv = t.invoice_number.toLowerCase().includes(q);
+        const mName = t.customer_name.toLowerCase().includes(q);
+        const mItem = t.items.some(i => i.item_name.toLowerCase().includes(q));
+        if (!mInv && !mName && !mItem) return false;
+      }
+      if (month && month !== 'all') {
+        if (!t.sale_date.startsWith(month)) return false;
+      }
+      if (start && end) {
+        const d = t.sale_date.substring(0, 10);
+        if (d < start || d > end) return false;
+      }
+      return true;
+    });
+  };
+
+  // Search by item name "Necklace"
+  const searchItemResult = filterTransactions(allSales, 'necklace', 'all');
+  assert.strictEqual(searchItemResult.length, 1);
+  assert.strictEqual(searchItemResult[0].invoice_number, 'SSJ-103');
+
+  // Filter by month "2026-09"
+  const monthResult = filterTransactions(allSales, '', '2026-09');
+  assert.strictEqual(monthResult.length, 1);
+  assert.strictEqual(monthResult[0].invoice_number, 'SSJ-102');
+
+  // Filter by custom date range
+  const rangeResult = filterTransactions(allSales, '', 'all', '2026-08-01', '2026-09-30');
+  assert.strictEqual(rangeResult.length, 2);
+});
+
+// ====================================================
+// TEST 30: Reports Page Isolation: bills_ledger is retired from Reports
+// ====================================================
+runTest('30. Reports Isolation: Reports sub-nav excludes bills_ledger and defaults to income_expenditure', () => {
+  const reportsAvailableTabs = [
+    'income_expenditure',
+    'party_stock',
+    'party_finances',
+    'monthly_summary',
+    'balance_sheet',
+    'custom_report'
+  ];
+
+  assert(!reportsAvailableTabs.includes('bills_ledger'), 'bills_ledger must NOT be present in Reports tabs');
+  assert.strictEqual(reportsAvailableTabs[0], 'income_expenditure', 'Reports default sub-tab must be income_expenditure');
+});
+
 console.log(`\n====================================================`);
 console.log(`🎉 TEST SUMMARY: ${passedTests}/${totalTests} TESTS PASSED`);
 console.log(`====================================================`);

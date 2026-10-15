@@ -229,7 +229,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <span>Recent Sales</span>
             </h3>
             <button
-              onClick={() => setActiveTab('reports')}
+              onClick={() => setActiveTab('create_sale')}
               className="text-xs text-[#D6B36A] hover:underline font-medium"
             >
               View All Invoices

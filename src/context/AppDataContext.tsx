@@ -31,8 +31,11 @@ interface AppDataContextType {
   stats: WholesaleDashboardStats;
   refreshData: () => Promise<void>;
   createPurchase: (purchaseData: any, itemsData: any[]) => Promise<Purchase>;
+  updatePurchase: (purchaseId: string, purchaseData: any) => Promise<Purchase>;
   deletePurchase: (purchaseId: string) => Promise<void>;
   createSale: (saleData: any, itemsData: any[]) => Promise<Sale>;
+  updateSale: (saleId: string, saleData: any) => Promise<Sale>;
+  deleteSale: (saleId: string) => Promise<void>;
   recordSalePayment: (saleId: string, amount: number, paymentMethod?: string, paymentDate?: string, notes?: string) => Promise<Sale>;
   voidSale: (saleId: string, reason: string) => Promise<void>;
   saveItem: (item: any) => Promise<Item>;
@@ -210,6 +213,12 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return created;
   };
 
+  const updatePurchase = async (purchaseId: string, purchaseData: any) => {
+    const updated = await storage.updatePurchase(purchaseId, purchaseData);
+    await refreshData();
+    return updated;
+  };
+
   const deletePurchase = async (purchaseId: string) => {
     await storage.deletePurchase(purchaseId);
     await refreshData();
@@ -219,6 +228,17 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const created = await storage.createSale(saleData, itemsData);
     await refreshData();
     return created;
+  };
+
+  const updateSale = async (saleId: string, saleData: any) => {
+    const updated = await storage.updateSale(saleId, saleData);
+    await refreshData();
+    return updated;
+  };
+
+  const deleteSale = async (saleId: string) => {
+    await storage.deleteSale(saleId);
+    await refreshData();
   };
 
   const recordSalePayment = async (
@@ -360,8 +380,11 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         stats,
         refreshData,
         createPurchase,
+        updatePurchase,
         deletePurchase,
         createSale,
+        updateSale,
+        deleteSale,
         recordSalePayment,
         voidSale,
         saveItem,

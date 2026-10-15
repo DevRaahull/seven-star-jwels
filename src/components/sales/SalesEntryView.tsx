@@ -9,10 +9,18 @@ import {
   DollarSign,
   FileText,
   Printer,
-  ChevronRight
+  ChevronRight,
+  Search,
+  Filter,
+  Edit3,
+  Eye,
+  RotateCcw,
+  ChevronDown,
+  ChevronUp,
+  X
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext';
-import { formatCurrency } from '../../lib/formatters';
+import { formatCurrency, formatDate } from '../../lib/formatters';
 import { Sale, PaymentStatus } from '../../types';
 import { InvoiceReceiptModal } from './InvoiceReceiptModal';
 
@@ -28,7 +36,7 @@ interface SaleLineDraft {
 }
 
 export const SalesEntryView: React.FC = () => {
-  const { items, states, parties, settings, createSale } = useAppData();
+  const { items, sales, states, parties, settings, createSale, updateSale, deleteSale } = useAppData();
 
   const activeItems = useMemo(() => {
     return items.filter(i => !i.is_archived);
@@ -79,8 +87,23 @@ export const SalesEntryView: React.FC = () => {
   // Submission State
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [successSale, setSuccessSale] = useState<Sale | null>(null);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
+
+  // Edit Mode State
+  const [editingSaleId, setEditingSaleId] = useState<string | null>(null);
+
+  // Previous Sales History State
+  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [monthFilter, setMonthFilter] = useState<string>('all');
+  const [salesStartDate, setSalesStartDate] = useState<string>('');
+  const [salesEndDate, setSalesEndDate] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [displayLimit, setDisplayLimit] = useState<number>(15);
+  const [saleToDelete, setSaleToDelete] = useState<Sale | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  const [selectedSaleForModal, setSelectedSaleForModal] = useState<Sale | null>(null);
 
   // Line selection change
   const handleItemSelect = (index: number, selectedItemId: string) => {
@@ -334,75 +357,85 @@ export const SalesEntryView: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      const salePayload = {
-        invoice_number: invoiceNumber.trim(),
-        sale_date: new Date(saleDate).toISOString(),
-        customer_name: buyerName.trim(),
-        party_id: selectedPartyId || undefined,
-        state_id: selectedStateId || undefined,
-        deduct_from_party_stock: deductFromPartyStock,
-        customer_phone: customerPhone.trim() || undefined,
-        is_interstate: isInterstate,
-        payment_method: paymentMethod,
-        payment_status: effectivePaymentStatus,
-        total_taxable: totalTaxable,
-        total_cgst: totalCgst,
-        total_sgst: totalSgst,
-        total_igst: totalIgst,
-        total_gst: totalGst,
-        grand_total: grandTotal,
-        total_cost: totalCostOfGoods,
-        gross_profit: grossProfit,
-        amount_received: rawReceived,
-        amount_due: balanceDue,
-        notes: notes.trim() || undefined,
-        status: 'completed'
-      };
+      if (editingSaleId) {
+        const updatePayload = {
+          sale_date: new Date(saleDate).toISOString(),
+          customer_name: buyerName.trim(),
+          party_id: selectedPartyId || undefined,
+          state_id: selectedStateId || undefined,
+          deduct_from_party_stock: deductFromPartyStock,
+          customer_phone: customerPhone.trim() || undefined,
+          is_interstate: isInterstate,
+          payment_method: paymentMethod,
+          payment_option: paymentOption,
+          amount_received: rawReceived,
+          notes: notes.trim() || undefined,
+          items: calculatedLines
+            .filter(l => l.itemId)
+            .map(l => ({
+              item_id: l.itemId,
+              item_name: l.itemName,
+              quantity: Number(l.quantity),
+              unit_sale_rate: Number(l.unitSaleRate),
+              gst_rate: l.gstRate
+            }))
+        };
 
-      const itemsPayload = calculatedLines
-        .filter(l => l.itemId)
-        .map(l => ({
-          item_id: l.itemId,
-          item_name: l.itemName,
-          quantity: Number(l.quantity),
-          unit_cost: l.unitCost,
-          unit_sale_rate: Number(l.unitSaleRate),
-          gst_rate: l.gstRate,
-          taxable_amount: l.taxable,
-          cgst_amount: l.cgst,
-          sgst_amount: l.sgst,
-          igst_amount: l.igst,
-          gst_amount: l.gstTotal,
-          line_total: l.lineTotal,
-          line_cost: l.totalCost,
-          line_profit: l.lineProfit
-        }));
+        const updated = await updateSale(editingSaleId, updatePayload);
+        setSuccessSale(updated);
+        setSuccessMessage(`Wholesale Bill #${invoiceNumber} updated successfully! Stock and dues recalculated.`);
+        handleCancelEdit();
+        setTimeout(() => setSuccessMessage(null), 5000);
+      } else {
+        const salePayload = {
+          invoice_number: invoiceNumber.trim(),
+          sale_date: new Date(saleDate).toISOString(),
+          customer_name: buyerName.trim(),
+          party_id: selectedPartyId || undefined,
+          state_id: selectedStateId || undefined,
+          deduct_from_party_stock: deductFromPartyStock,
+          customer_phone: customerPhone.trim() || undefined,
+          is_interstate: isInterstate,
+          payment_method: paymentMethod,
+          payment_status: effectivePaymentStatus,
+          total_taxable: totalTaxable,
+          total_cgst: totalCgst,
+          total_sgst: totalSgst,
+          total_igst: totalIgst,
+          total_gst: totalGst,
+          grand_total: grandTotal,
+          total_cost: totalCostOfGoods,
+          gross_profit: grossProfit,
+          amount_received: rawReceived,
+          amount_due: balanceDue,
+          notes: notes.trim() || undefined,
+          status: 'completed'
+        };
 
-      const created = await createSale(salePayload, itemsPayload);
-      setSuccessSale(created);
-      setShowPrintModal(true);
+        const itemsPayload = calculatedLines
+          .filter(l => l.itemId)
+          .map(l => ({
+            item_id: l.itemId,
+            item_name: l.itemName,
+            quantity: Number(l.quantity),
+            unit_cost: l.unitCost,
+            unit_sale_rate: Number(l.unitSaleRate),
+            gst_rate: l.gstRate,
+            taxable_amount: l.taxable,
+            cgst_amount: l.cgst,
+            sgst_amount: l.sgst,
+            igst_amount: l.igst,
+            gst_amount: l.gstTotal,
+            line_total: l.lineTotal,
+            line_cost: l.totalCost,
+            line_profit: l.lineProfit
+          }));
 
-      // Reset for next sale
-      setSelectedPartyId('');
-      setSelectedStateId('');
-      setBuyerName('');
-      setCustomerPhone('');
-      setDeductFromPartyStock(false);
-      setNotes('');
-      setPaymentOption('Due Balance');
-      setPaymentAmountInput('');
-      setLines([
-        {
-          tempId: `line-${Date.now()}`,
-          itemId: '',
-          itemName: '',
-          availableStock: 0,
-          quantity: 1,
-          unitCost: 0,
-          unitSaleRate: '',
-          gstRate: defaultGst
-        }
-      ]);
+        const created = await createSale(salePayload, itemsPayload);
+        setSuccessSale(created);
+        setShowPrintModal(true);
+        handleCancelEdit();
+      }
     } catch (err: any) {
       console.error(err);
       setErrorMessage(err.message || 'Failed to record wholesale sale.');
@@ -410,6 +443,179 @@ export const SalesEntryView: React.FC = () => {
       setIsSubmitting(false);
     }
   };
+
+  const handleCancelEdit = () => {
+    setEditingSaleId(null);
+    setSaleDate(new Date().toISOString().split('T')[0]);
+    setInvoiceNumber(
+      `${settings.invoice_prefix || 'SSJ-'}${settings.next_invoice_number || Math.floor(1000 + Math.random() * 9000)}`
+    );
+    setSelectedPartyId('');
+    setSelectedStateId('');
+    setBuyerName('');
+    setCustomerPhone('');
+    setDeductFromPartyStock(false);
+    setIsInterstate(false);
+    setPaymentMethod('Bank Transfer / RTGS');
+    setNotes('');
+    setPaymentOption('Due Balance');
+    setPaymentAmountInput('');
+    setLines([
+      {
+        tempId: `line-${Date.now()}`,
+        itemId: '',
+        itemName: '',
+        availableStock: 0,
+        quantity: 1,
+        unitCost: 0,
+        unitSaleRate: '',
+        gstRate: defaultGst
+      }
+    ]);
+  };
+
+  const handleStartEdit = (sale: Sale) => {
+    setEditingSaleId(sale.id);
+    setSaleDate(sale.sale_date ? sale.sale_date.split('T')[0] : new Date().toISOString().split('T')[0]);
+    setInvoiceNumber(sale.invoice_number);
+    setSelectedPartyId(sale.party_id || '');
+    setSelectedStateId(sale.state_id || '');
+    setBuyerName(sale.customer_name || '');
+    setCustomerPhone(sale.customer_phone || '');
+    setDeductFromPartyStock(Boolean(sale.deduct_from_party_stock));
+    setIsInterstate(Boolean(sale.is_interstate));
+    setPaymentMethod(sale.payment_method || 'Bank Transfer / RTGS');
+    setNotes(sale.notes || '');
+
+    if (sale.payment_status === 'Payment Complete') {
+      setPaymentOption('Payment Complete');
+      setPaymentAmountInput(sale.grand_total);
+    } else if (sale.amount_received && sale.amount_received > 0) {
+      setPaymentOption('Advance Paid');
+      setPaymentAmountInput(sale.amount_received);
+    } else {
+      setPaymentOption('Due Balance');
+      setPaymentAmountInput(0);
+    }
+
+    if (sale.items && sale.items.length > 0) {
+      const editLines: SaleLineDraft[] = sale.items.map((it, idx) => {
+        const found = items.find(i => i.id === it.item_id || i.name.toLowerCase() === it.item_name.toLowerCase());
+        const currentStock = found?.current_stock || 0;
+        const priorQty = it.quantity || 0;
+        return {
+          tempId: `edit-line-${idx}-${Date.now()}`,
+          itemId: it.item_id || (found ? found.id : ''),
+          itemName: it.item_name,
+          availableStock: currentStock + priorQty,
+          quantity: it.quantity,
+          unitCost: it.unit_cost || (found ? found.purchase_rate : 0),
+          unitSaleRate: it.unit_sale_rate,
+          gstRate: it.gst_rate !== undefined ? it.gst_rate : defaultGst
+        };
+      });
+      setLines(editLines);
+    }
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDeleteSale = async () => {
+    if (!saleToDelete) return;
+    setIsDeleting(true);
+    setErrorMessage(null);
+    try {
+      await deleteSale(saleToDelete.id);
+      setSuccessMessage(`Wholesale Bill #${saleToDelete.invoice_number} deleted and stock restored.`);
+      setSaleToDelete(null);
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to delete sales bill');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // Month-Year List for history filter
+  const availableMonths = useMemo(() => {
+    const set = new Set<string>();
+    sales.forEach(s => {
+      if (s.sale_date) {
+        set.add(s.sale_date.substring(0, 7)); // YYYY-MM
+      }
+    });
+    return Array.from(set).sort().reverse();
+  }, [sales]);
+
+  const formatMonthLabel = (yyyyMm: string) => {
+    if (!yyyyMm || !yyyyMm.includes('-')) return yyyyMm;
+    const [year, month] = yyyyMm.split('-');
+    const date = new Date(parseInt(year), parseInt(month) - 1, 1);
+    return date.toLocaleString('default', { month: 'long', year: 'numeric' });
+  };
+
+  // Filtered sales across all months & years
+  const filteredSales = useMemo(() => {
+    return sales.filter(s => {
+      // 1. Text Search: invoice #, buyer name, or item name
+      if (searchTerm.trim()) {
+        const q = searchTerm.toLowerCase().trim();
+        const matchInv = s.invoice_number?.toLowerCase().includes(q);
+        const matchBuyer = s.customer_name?.toLowerCase().includes(q);
+        const matchItem = s.items?.some(it => it.item_name.toLowerCase().includes(q));
+        if (!matchInv && !matchBuyer && !matchItem) return false;
+      }
+
+      // 2. Month Filter
+      if (monthFilter !== 'all') {
+        if (!s.sale_date || !s.sale_date.startsWith(monthFilter)) return false;
+      }
+
+      // 3. Custom Date Range
+      if (salesStartDate && salesEndDate) {
+        const sDate = s.sale_date ? s.sale_date.substring(0, 10) : '';
+        if (sDate < salesStartDate || sDate > salesEndDate) return false;
+      } else if (salesStartDate) {
+        const sDate = s.sale_date ? s.sale_date.substring(0, 10) : '';
+        if (sDate < salesStartDate) return false;
+      } else if (salesEndDate) {
+        const sDate = s.sale_date ? s.sale_date.substring(0, 10) : '';
+        if (sDate > salesEndDate) return false;
+      }
+
+      // 4. Status Filter
+      if (statusFilter !== 'all') {
+        if (s.payment_status !== statusFilter) return false;
+      }
+
+      return true;
+    });
+  }, [sales, searchTerm, monthFilter, salesStartDate, salesEndDate, statusFilter]);
+
+  // Aggregate stats for filtered history
+  const salesStats = useMemo(() => {
+    let totalGrand = 0;
+    let totalReceived = 0;
+    let totalDue = 0;
+    filteredSales.forEach(s => {
+      if (s.status !== 'voided') {
+        totalGrand += s.grand_total || 0;
+        totalReceived += s.amount_received || 0;
+        totalDue += s.amount_due || 0;
+      }
+    });
+    return {
+      count: filteredSales.length,
+      totalGrand: Math.round(totalGrand * 100) / 100,
+      totalReceived: Math.round(totalReceived * 100) / 100,
+      totalDue: Math.round(totalDue * 100) / 100
+    };
+  }, [filteredSales]);
+
+  // Visible page items
+  const visibleSales = useMemo(() => {
+    return filteredSales.slice(0, displayLimit);
+  }, [filteredSales, displayLimit]);
 
   return (
     <div className="space-y-6 pb-16">
@@ -436,11 +642,45 @@ export const SalesEntryView: React.FC = () => {
         )}
       </div>
 
-      {/* Error Message */}
+      {/* Notifications */}
+      {successMessage && (
+        <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-center gap-2.5 animate-in fade-in">
+          <CheckCircle2 size={18} className="text-emerald-400 shrink-0" />
+          <span className="font-semibold">{successMessage}</span>
+        </div>
+      )}
+
       {errorMessage && (
         <div className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs flex items-center gap-2.5 animate-in fade-in">
           <AlertCircle size={18} className="text-rose-400 shrink-0" />
           <span className="font-semibold">{errorMessage}</span>
+        </div>
+      )}
+
+      {/* Editing Mode Banner */}
+      {editingSaleId && (
+        <div className="p-4 bg-amber-500/15 border-2 border-amber-500/40 rounded-xl text-amber-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in shadow-lg">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-amber-500/20 text-amber-300 rounded-lg shrink-0">
+              <Edit3 size={18} />
+            </div>
+            <div>
+              <span className="font-bold text-sm text-[#F5F3EE] block">
+                Editing Wholesale Bill: #{invoiceNumber} ({buyerName || 'Buyer'})
+              </span>
+              <span className="text-[#AAB4C5] text-[11px]">
+                Modifying this bill will adjust inventory stock levels and recalculate customer dues.
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleCancelEdit}
+            className="px-4 py-2 bg-[#1E2B45] hover:bg-[#253655] text-[#F5F3EE] rounded-lg font-semibold text-xs transition flex items-center justify-center gap-1.5 self-start sm:self-auto shrink-0"
+          >
+            <RotateCcw size={14} />
+            <span>Cancel Edit</span>
+          </button>
         </div>
       )}
 
@@ -1102,13 +1342,26 @@ export const SalesEntryView: React.FC = () => {
 
             {/* Desktop Submit Button */}
             <div className="hidden lg:flex pt-6 items-center justify-end gap-3">
+              {editingSaleId && (
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="px-5 py-2.5 bg-[#1E2B45] hover:bg-[#253655] text-[#AAB4C5] hover:text-[#F5F3EE] rounded-xl text-xs font-semibold transition"
+                >
+                  Cancel Edit
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={isSubmitting || (typeof paymentAmountInput === 'number' && paymentAmountInput > grandTotal)}
                 className="flex items-center gap-2 px-6 py-2.5 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold shadow-md transition active:scale-95 disabled:opacity-50"
               >
                 <CheckCircle2 size={16} strokeWidth={2.5} />
-                <span>{isSubmitting ? 'Generating Bill...' : 'Generate Bill & Print Invoice'}</span>
+                <span>
+                  {isSubmitting
+                    ? (editingSaleId ? 'Updating Wholesale Bill...' : 'Generating Bill...')
+                    : (editingSaleId ? 'Update Wholesale Bill' : 'Generate Bill & Print Invoice')}
+                </span>
               </button>
             </div>
           </div>
@@ -1120,18 +1373,489 @@ export const SalesEntryView: React.FC = () => {
             <span className="text-[10px] text-[#AAB4C5] block font-mono">Total: {formatCurrency(grandTotal)}</span>
             <span className="text-xs font-mono font-bold text-rose-400">Due: {formatCurrency(balanceDue)}</span>
           </div>
-          <button
-            type="submit"
-            disabled={isSubmitting || (typeof paymentAmountInput === 'number' && paymentAmountInput > grandTotal)}
-            className="flex-1 py-2.5 px-4 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold shadow-lg transition active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
-          >
-            <CheckCircle2 size={16} strokeWidth={2.5} />
-            <span>{isSubmitting ? 'Generating...' : 'Save & Print Invoice'}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {editingSaleId && (
+              <button
+                type="button"
+                onClick={handleCancelEdit}
+                className="py-2.5 px-3 bg-[#1E2B45] text-[#AAB4C5] rounded-xl text-xs font-semibold shrink-0"
+              >
+                Cancel
+              </button>
+            )}
+            <button
+              type="submit"
+              disabled={isSubmitting || (typeof paymentAmountInput === 'number' && paymentAmountInput > grandTotal)}
+              className="flex-1 py-2.5 px-4 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold shadow-lg transition active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
+            >
+              <CheckCircle2 size={16} strokeWidth={2.5} />
+              <span>
+                {isSubmitting
+                  ? (editingSaleId ? 'Updating...' : 'Generating...')
+                  : (editingSaleId ? 'Update Bill' : 'Save & Print Invoice')}
+              </span>
+            </button>
+          </div>
         </div>
       </form>
 
-      {/* Global Invoice Preview Modal */}
+      {/* ========================================================================= */}
+      {/* SECTION 2: PREVIOUS SALES / SALES HISTORY (ALL MONTHS & YEARS) */}
+      {/* ========================================================================= */}
+      <div className="pt-8 border-t border-[#1E2B45] space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h3 className="text-lg lg:text-xl font-serif font-bold text-gold-gradient tracking-wide flex items-center gap-2">
+              <FileText className="text-[#D6B36A]" size={20} />
+              <span>Previous Sales / Sales History</span>
+            </h3>
+            <p className="text-xs text-[#AAB4C5] mt-0.5">
+              Complete history of wholesale bills across all months and years. Inspect invoices, edit bills, or safely delete transactions.
+            </p>
+          </div>
+          <span className="text-xs font-mono px-3 py-1 bg-[#111B2E] border border-[#1E2B45] rounded-full text-[#D6B36A] self-start sm:self-auto font-semibold">
+            {filteredSales.length} {filteredSales.length === 1 ? 'Bill' : 'Bills'} Found
+          </span>
+        </div>
+
+        {/* Metrics Summary Strip */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-3.5">
+            <span className="text-[11px] text-[#AAB4C5] block">Total Invoices</span>
+            <span className="text-base lg:text-lg font-bold font-mono text-[#F5F3EE] mt-0.5 block">
+              {salesStats.count}
+            </span>
+          </div>
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-3.5">
+            <span className="text-[11px] text-[#AAB4C5] block">Total Wholesale Sales</span>
+            <span className="text-base lg:text-lg font-bold font-mono text-[#D6B36A] mt-0.5 block">
+              {formatCurrency(salesStats.totalGrand)}
+            </span>
+          </div>
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-3.5">
+            <span className="text-[11px] text-[#AAB4C5] block">Total Received</span>
+            <span className="text-base lg:text-lg font-bold font-mono text-emerald-400 mt-0.5 block">
+              {formatCurrency(salesStats.totalReceived)}
+            </span>
+          </div>
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-3.5">
+            <span className="text-[11px] text-[#AAB4C5] block">Outstanding Dues</span>
+            <span className="text-base lg:text-lg font-bold font-mono text-rose-400 mt-0.5 block">
+              {formatCurrency(salesStats.totalDue)}
+            </span>
+          </div>
+        </div>
+
+        {/* Search & Filter Toolbar */}
+        <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 space-y-3">
+          <div className="flex flex-col lg:flex-row gap-3">
+            {/* Search Input */}
+            <div className="relative flex-1">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#7A8699]" />
+              <input
+                type="text"
+                placeholder="Search invoice #, customer name, or jewellery item..."
+                value={searchTerm}
+                onChange={e => {
+                  setSearchTerm(e.target.value);
+                  setDisplayLimit(15);
+                }}
+                className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg pl-9 pr-3 py-2 text-xs text-[#F5F3EE] placeholder-[#7A8699] focus:outline-none focus:border-[#D6B36A] transition"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#7A8699] hover:text-[#F5F3EE]"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            {/* Month/Year Filter */}
+            <div className="w-full lg:w-48">
+              <select
+                value={monthFilter}
+                onChange={e => {
+                  setMonthFilter(e.target.value);
+                  setDisplayLimit(15);
+                }}
+                className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+              >
+                <option value="all">All Months & Years</option>
+                {availableMonths.map(m => (
+                  <option key={m} value={m}>
+                    {formatMonthLabel(m)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Payment Status Filter */}
+            <div className="w-full lg:w-44">
+              <select
+                value={statusFilter}
+                onChange={e => {
+                  setStatusFilter(e.target.value);
+                  setDisplayLimit(15);
+                }}
+                className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+              >
+                <option value="all">All Statuses</option>
+                <option value="Payment Complete">Payment Complete</option>
+                <option value="Advance Paid">Advance Paid</option>
+                <option value="Due Balance">Due Balance</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Custom Date Range Filter */}
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#1E2B45]/60 text-xs">
+            <span className="text-[#AAB4C5] text-[11px] font-medium flex items-center gap-1">
+              <Calendar size={13} className="text-[#D6B36A]" />
+              <span>Custom Date Range:</span>
+            </span>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="date"
+                value={salesStartDate}
+                onChange={e => {
+                  setSalesStartDate(e.target.value);
+                  setDisplayLimit(15);
+                }}
+                className="bg-[#0B1220] border border-[#1E2B45] rounded-md px-2 py-1 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+              />
+              <span className="text-[#7A8699]">to</span>
+              <input
+                type="date"
+                value={salesEndDate}
+                onChange={e => {
+                  setSalesEndDate(e.target.value);
+                  setDisplayLimit(15);
+                }}
+                className="bg-[#0B1220] border border-[#1E2B45] rounded-md px-2 py-1 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+              />
+              {(salesStartDate || salesEndDate) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSalesStartDate('');
+                    setSalesEndDate('');
+                  }}
+                  className="px-2 py-1 bg-[#1E2B45] text-[#AAB4C5] hover:text-[#F5F3EE] rounded-md text-[11px]"
+                >
+                  Clear Range
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile View: Cards (< sm) */}
+        <div className="sm:hidden space-y-3">
+          {visibleSales.length === 0 ? (
+            <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-8 text-center text-xs text-[#7A8699]">
+              No sales transactions matching your filters.
+            </div>
+          ) : (
+            visibleSales.map(sale => {
+              const party = parties.find(p => p.id === sale.party_id);
+              return (
+                <div key={sale.id} className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <span className="font-semibold text-sm text-[#F5F3EE] block">
+                        {sale.customer_name}
+                      </span>
+                      <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                        <span className="text-xs font-mono font-bold text-[#D6B36A]">
+                          #{sale.invoice_number}
+                        </span>
+                        <span className="text-[10px] text-[#7A8699]">
+                          • {formatDate(sale.sale_date)}
+                        </span>
+                        {party && (
+                          <span className="text-[10px] px-1.5 py-0.2 bg-[#1E2B45] text-[#AAB4C5] rounded font-medium">
+                            Party: {party.name}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <span
+                      className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                        sale.payment_status === 'Payment Complete'
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          : sale.payment_status === 'Advance Paid'
+                          ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                          : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                      }`}
+                    >
+                      {sale.payment_status}
+                    </span>
+                  </div>
+
+                  {/* Items Summary */}
+                  {sale.items && sale.items.length > 0 && (
+                    <div className="bg-[#0B1220]/60 p-2 rounded-lg border border-[#1E2B45]/50 space-y-1">
+                      {sale.items.map((it, idx) => (
+                        <div key={idx} className="flex justify-between items-center text-xs">
+                          <span className="text-[#AAB4C5] truncate max-w-[65%]">
+                            {it.item_name} <span className="font-mono text-[#F5F3EE]">× {it.quantity}</span>
+                          </span>
+                          <span className="font-mono text-[#F5F3EE] text-[11px]">
+                            {formatCurrency(it.line_total)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Financial Figures */}
+                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[#1E2B45]/60 text-xs">
+                    <div>
+                      <span className="text-[10px] text-[#AAB4C5] block">Total</span>
+                      <span className="font-mono font-bold text-[#F5F3EE]">
+                        {formatCurrency(sale.grand_total)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-[#AAB4C5] block">Received</span>
+                      <span className="font-mono font-bold text-emerald-400">
+                        {formatCurrency(sale.amount_received)}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] text-[#AAB4C5] block">Due</span>
+                      <span className={`font-mono font-bold ${sale.amount_due > 0 ? 'text-rose-400' : 'text-[#7A8699]'}`}>
+                        {formatCurrency(sale.amount_due)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#1E2B45]/60">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSaleForModal(sale)}
+                      className="flex-1 py-1.5 px-2 bg-[#1E2B45] hover:bg-[#253655] text-[#D6B36A] rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition"
+                    >
+                      <Eye size={13} />
+                      <span>View</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleStartEdit(sale)}
+                      className="flex-1 py-1.5 px-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition"
+                    >
+                      <Edit3 size={13} />
+                      <span>Edit</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSaleToDelete(sale)}
+                      className="py-1.5 px-2.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Desktop View: Table (hidden sm:block) */}
+        <div className="hidden sm:block bg-[#111B2E] border border-[#1E2B45] rounded-xl overflow-hidden shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="bg-[#0E1726] border-b border-[#1E2B45] text-[#AAB4C5]">
+                  <th className="py-3 px-4 font-semibold">Date</th>
+                  <th className="py-3 px-4 font-semibold">Invoice #</th>
+                  <th className="py-3 px-4 font-semibold">Buyer / Party</th>
+                  <th className="py-3 px-4 font-semibold">Jewellery Items Sold</th>
+                  <th className="py-3 px-4 font-semibold text-right">Total (₹)</th>
+                  <th className="py-3 px-4 font-semibold text-right">Received (₹)</th>
+                  <th className="py-3 px-4 font-semibold text-right">Due (₹)</th>
+                  <th className="py-3 px-4 font-semibold text-center">Status</th>
+                  <th className="py-3 px-4 font-semibold text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#1E2B45]/60">
+                {visibleSales.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="py-8 text-center text-xs text-[#7A8699]">
+                      No wholesale sales transactions matching your filters.
+                    </td>
+                  </tr>
+                ) : (
+                  visibleSales.map(sale => {
+                    const party = parties.find(p => p.id === sale.party_id);
+                    return (
+                      <tr key={sale.id} className="hover:bg-[#16233B]/50 transition">
+                        <td className="py-3 px-4 text-[#AAB4C5] whitespace-nowrap">
+                          {formatDate(sale.sale_date)}
+                        </td>
+                        <td className="py-3 px-4 font-mono font-bold text-[#D6B36A] whitespace-nowrap">
+                          #{sale.invoice_number}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="font-semibold text-[#F5F3EE] block">
+                            {sale.customer_name}
+                          </span>
+                          {party && (
+                            <span className="text-[10px] text-[#AAB4C5] block">
+                              Party: {party.name}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 max-w-xs">
+                          <div className="space-y-0.5">
+                            {sale.items && sale.items.length > 0 ? (
+                              sale.items.map((it, idx) => (
+                                <div key={idx} className="text-[#AAB4C5] truncate">
+                                  <span className="text-[#F5F3EE] font-medium">{it.item_name}</span>{' '}
+                                  <span className="font-mono text-[11px]">({it.quantity} pcs @ {formatCurrency(it.unit_sale_rate)})</span>
+                                </div>
+                              ))
+                            ) : (
+                              <span className="text-[#7A8699] italic">Jewellery Items</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono font-bold text-[#F5F3EE] whitespace-nowrap">
+                          {formatCurrency(sale.grand_total)}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-emerald-400 whitespace-nowrap">
+                          {formatCurrency(sale.amount_received)}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono font-semibold whitespace-nowrap">
+                          <span className={sale.amount_due > 0 ? 'text-rose-400' : 'text-[#7A8699]'}>
+                            {formatCurrency(sale.amount_due)}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-center whitespace-nowrap">
+                          <span
+                            className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold ${
+                              sale.payment_status === 'Payment Complete'
+                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                : sale.payment_status === 'Advance Paid'
+                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                            }`}
+                          >
+                            {sale.payment_status}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-center whitespace-nowrap">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedSaleForModal(sale)}
+                              className="p-1.5 rounded-lg bg-[#1E2B45] hover:bg-[#253655] text-[#D6B36A] hover:text-[#e4c478] transition"
+                              title="View & Share Invoice"
+                            >
+                              <Eye size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleStartEdit(sale)}
+                              className="p-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 hover:text-amber-200 transition"
+                              title="Edit Wholesale Bill"
+                            >
+                              <Edit3 size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSaleToDelete(sale)}
+                              className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 transition"
+                              title="Delete & Restore Stock"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Load More Button */}
+        {filteredSales.length > displayLimit && (
+          <div className="text-center pt-2">
+            <button
+              type="button"
+              onClick={() => setDisplayLimit(prev => prev + 15)}
+              className="px-6 py-2.5 bg-[#111B2E] hover:bg-[#16233B] border border-[#1E2B45] rounded-xl text-xs font-semibold text-[#D6B36A] transition active:scale-95 shadow-sm"
+            >
+              Load More Sales ({filteredSales.length - displayLimit} remaining)
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* DELETE CONFIRMATION MODAL */}
+      {saleToDelete && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl text-left">
+            <div className="flex items-start gap-3.5">
+              <div className="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl shrink-0">
+                <Trash2 size={24} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#F5F3EE]">Delete Wholesale Bill #{saleToDelete.invoice_number}?</h3>
+                <p className="text-xs text-[#AAB4C5] mt-1">
+                  Customer: <span className="text-[#F5F3EE] font-semibold">{saleToDelete.customer_name}</span> • Amount: <span className="text-[#D6B36A] font-mono font-semibold">{formatCurrency(saleToDelete.grand_total)}</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300 space-y-2">
+              <div className="flex items-center gap-2 font-semibold text-rose-200">
+                <AlertCircle size={15} className="shrink-0" />
+                <span>Stock Reversal Guard</span>
+              </div>
+              <p className="text-[11px] leading-relaxed text-rose-300">
+                All jewellery pieces ({saleToDelete.items?.reduce((sum, it) => sum + it.quantity, 0) || 0} units) sold on this bill will be automatically restored and added back to warehouse inventory stock.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setSaleToDelete(null)}
+                className="px-4 py-2 bg-[#1E2B45] hover:bg-[#253655] text-[#AAB4C5] hover:text-[#F5F3EE] rounded-xl text-xs font-semibold transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleDeleteSale}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold shadow-lg transition active:scale-95 disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Trash2 size={14} />
+                <span>{isDeleting ? 'Deleting & Restoring...' : 'Yes, Delete & Restore Stock'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Selected Sale Preview Modal */}
+      {selectedSaleForModal && (
+        <InvoiceReceiptModal
+          sale={selectedSaleForModal}
+          onClose={() => setSelectedSaleForModal(null)}
+        />
+      )}
+
+      {/* Global Invoice Preview Modal (After Create) */}
       {showPrintModal && successSale && (
         <InvoiceReceiptModal
           sale={successSale}
