@@ -1,4 +1,4 @@
-﻿import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import { getSupabaseClient, getSupabaseConfig } from '../lib/supabase';
 
 interface UserProfile {
@@ -19,6 +19,9 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+export const AUTHORIZED_OWNER_EMAIL = 'ravidhika08@gmail.com';
+export const AUTHORIZED_OWNER_PASSWORD = 'Jatin@1234';
+
 const LOCAL_AUTH_KEY = 'SSJ_AUTH_USER';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -35,10 +38,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (client) {
         try {
           const { data: { session } } = await client.auth.getSession();
-          if (session?.user) {
+          if (session?.user && session.user.email?.toLowerCase() === AUTHORIZED_OWNER_EMAIL) {
             setUser({
               id: session.user.id,
-              email: session.user.email || 'owner@sevenstar.com',
+              email: AUTHORIZED_OWNER_EMAIL,
               role: 'owner'
             });
             setIsLoading(false);
@@ -46,14 +49,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           client.auth.onAuthStateChange((_event, session) => {
-            if (session?.user) {
+            if (session?.user && session.user.email?.toLowerCase() === AUTHORIZED_OWNER_EMAIL) {
               setUser({
                 id: session.user.id,
-                email: session.user.email || 'owner@sevenstar.com',
+                email: AUTHORIZED_OWNER_EMAIL,
                 role: 'owner'
               });
             } else {
-              setUser(null);
+              // Only keep user if authenticated in local storage
+              const local = localStorage.getItem(LOCAL_AUTH_KEY);
+              if (!local) setUser(null);
             }
           });
         } catch (e) {
@@ -65,24 +70,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const savedUser = localStorage.getItem(LOCAL_AUTH_KEY);
       if (savedUser) {
         try {
-          setUser(JSON.parse(savedUser));
+          const parsed = JSON.parse(savedUser);
+          if (parsed && parsed.email?.toLowerCase() === AUTHORIZED_OWNER_EMAIL) {
+            setUser(parsed);
+          } else {
+            setUser(null);
+            localStorage.removeItem(LOCAL_AUTH_KEY);
+          }
         } catch {
-          // If corrupted, fallback
-          setUser({
-            id: 'local-owner',
-            email: 'owner@sevenstarjewels.com',
-            role: 'owner'
-          });
+          setUser(null);
+          localStorage.removeItem(LOCAL_AUTH_KEY);
         }
       } else {
-        // Default owner session for immediate zero-friction access
-        const defaultOwner: UserProfile = {
-          id: 'local-owner',
-          email: 'owner@sevenstarjewels.com',
-          role: 'owner'
-        };
-        setUser(defaultOwner);
-        localStorage.setItem(LOCAL_AUTH_KEY, JSON.stringify(defaultOwner));
+        // No auto-bypass: user must authenticate with ravidhika08@gmail.com / Jatin@1234
+        setUser(null);
       }
 
       setIsLoading(false);
@@ -92,63 +93,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+    const inputEmail = email.trim().toLowerCase();
+
+    // Strict authentication against authorized owner credentials
+    if (inputEmail !== AUTHORIZED_OWNER_EMAIL || password !== AUTHORIZED_OWNER_PASSWORD) {
+      return { success: false, error: 'Invalid owner email or password. Access denied.' };
+    }
+
     const client = getSupabaseClient();
     if (client) {
       try {
-        const { data, error } = await client.auth.signInWithPassword({ email, password });
-        if (error) return { success: false, error: error.message };
-        if (data.user) {
-          const profile: UserProfile = {
-            id: data.user.id,
-            email: data.user.email || email,
-            role: 'owner'
-          };
-          setUser(profile);
-          return { success: true };
+        const { error } = await client.auth.signInWithPassword({
+          email: AUTHORIZED_OWNER_EMAIL,
+          password: AUTHORIZED_OWNER_PASSWORD
+        });
+        if (error) {
+          // If not created on Supabase yet, create account
+          await client.auth.signUp({
+            email: AUTHORIZED_OWNER_EMAIL,
+            password: AUTHORIZED_OWNER_PASSWORD
+          });
         }
       } catch (err: any) {
-        return { success: false, error: err.message || 'Login failed' };
+        console.warn('Supabase cloud auth notice:', err);
       }
     }
 
-    // Local authentication fallback
-    const localUser: UserProfile = {
-      id: 'local-owner',
-      email: email.trim().toLowerCase(),
+    const ownerProfile: UserProfile = {
+      id: 'owner-ravidhika',
+      email: AUTHORIZED_OWNER_EMAIL,
       role: 'owner'
     };
-    setUser(localUser);
-    localStorage.setItem(LOCAL_AUTH_KEY, JSON.stringify(localUser));
+    setUser(ownerProfile);
+    localStorage.setItem(LOCAL_AUTH_KEY, JSON.stringify(ownerProfile));
     return { success: true };
   };
 
   const registerOwner = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
-    const client = getSupabaseClient();
-    if (client) {
-      try {
-        const { data, error } = await client.auth.signUp({ email, password });
-        if (error) return { success: false, error: error.message };
-        if (data.user) {
-          setUser({
-            id: data.user.id,
-            email: data.user.email || email,
-            role: 'owner'
-          });
-          return { success: true };
-        }
-      } catch (err: any) {
-        return { success: false, error: err.message || 'Sign up failed' };
-      }
-    }
-
-    const localUser: UserProfile = {
-      id: 'local-owner',
-      email: email.trim().toLowerCase(),
-      role: 'owner'
-    };
-    setUser(localUser);
-    localStorage.setItem(LOCAL_AUTH_KEY, JSON.stringify(localUser));
-    return { success: true };
+    return login(email, password);
   };
 
   const logout = async () => {
