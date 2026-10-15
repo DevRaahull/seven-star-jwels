@@ -33,6 +33,33 @@ export function isValidUUID(uuid?: string | null): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
 }
 
+export function encodeSalesNotes(userNotes?: string, partyId?: string, stateId?: string): string | null {
+  const parts: string[] = [];
+  if (userNotes?.trim()) parts.push(userNotes.trim());
+  if (partyId) parts.push(`[SSJ_PARTY:${partyId}]`);
+  if (stateId) parts.push(`[SSJ_STATE:${stateId}]`);
+  return parts.length > 0 ? parts.join('\n') : null;
+}
+
+export function decodeSalesNotes(rawNotes?: string | null): { notes?: string; party_id?: string; state_id?: string } {
+  if (!rawNotes) return {};
+  let notes = rawNotes;
+  let party_id: string | undefined;
+  let state_id: string | undefined;
+
+  const partyMatch = notes.match(/\[SSJ_PARTY:([^\]]+)\]/);
+  if (partyMatch) {
+    party_id = partyMatch[1];
+    notes = notes.replace(partyMatch[0], '').trim();
+  }
+  const stateMatch = notes.match(/\[SSJ_STATE:([^\]]+)\]/);
+  if (stateMatch) {
+    state_id = stateMatch[1];
+    notes = notes.replace(stateMatch[0], '').trim();
+  }
+  return { notes: notes || undefined, party_id, state_id };
+}
+
 const STORAGE_KEYS = {
   SETTINGS: 'SSJ_SETTINGS',
   ITEMS: 'SSJ_ITEMS',
@@ -1138,11 +1165,17 @@ class StorageService {
           .select('*, items:sale_items(*), payments:sale_payments(*)')
           .order('sale_date', { ascending: false });
         if (!error && data) {
-          const mapped: Sale[] = data.map((s: any) => ({
-            ...s,
-            items: s.items || [],
-            payments: s.payments || []
-          }));
+          const mapped: Sale[] = data.map((s: any) => {
+            const decoded = decodeSalesNotes(s.notes);
+            return {
+              ...s,
+              notes: decoded.notes,
+              party_id: s.party_id || decoded.party_id,
+              state_id: s.state_id || decoded.state_id,
+              items: s.items || [],
+              payments: s.payments || []
+            };
+          });
           this.saveToLocal(STORAGE_KEYS.SALES, mapped);
           return mapped;
         }
@@ -1395,8 +1428,6 @@ class StorageService {
       invoice_number: newSale.invoice_number,
       sale_date: newSale.sale_date,
       customer_name: newSale.customer_name,
-      party_id: isValidUUID(newSale.party_id) ? newSale.party_id : null,
-      state_id: isValidUUID(newSale.state_id) ? newSale.state_id : null,
       buyer_gstin: newSale.buyer_gstin || null,
       buyer_address: newSale.buyer_address || null,
       customer_phone: newSale.customer_phone || null,
@@ -1413,7 +1444,7 @@ class StorageService {
       gross_profit: newSale.gross_profit,
       amount_received: newSale.amount_received,
       amount_due: newSale.amount_due,
-      notes: newSale.notes || null,
+      notes: encodeSalesNotes(newSale.notes, newSale.party_id, newSale.state_id),
       status: 'completed',
       created_at: now,
       updated_at: now
@@ -1845,8 +1876,8 @@ class StorageService {
       const saleHeaderDb: any = {
         sale_date: updatedSale.sale_date,
         customer_name: updatedSale.customer_name,
-        party_id: isValidUUID(updatedSale.party_id) ? updatedSale.party_id : null,
-        state_id: isValidUUID(updatedSale.state_id) ? updatedSale.state_id : null,
+        buyer_gstin: updatedSale.buyer_gstin || null,
+        buyer_address: updatedSale.buyer_address || null,
         customer_phone: updatedSale.customer_phone || null,
         is_interstate: updatedSale.is_interstate,
         payment_method: updatedSale.payment_method,
@@ -1861,7 +1892,7 @@ class StorageService {
         gross_profit: updatedSale.gross_profit,
         amount_received: updatedSale.amount_received,
         amount_due: updatedSale.amount_due,
-        notes: updatedSale.notes || null,
+        notes: encodeSalesNotes(updatedSale.notes, updatedSale.party_id, updatedSale.state_id),
         status: 'completed',
         updated_at: now
       };
