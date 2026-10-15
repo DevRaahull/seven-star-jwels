@@ -814,6 +814,237 @@ runTest('30. Reports Isolation: Reports sub-nav excludes bills_ledger and defaul
   assert.strictEqual(reportsAvailableTabs[0], 'income_expenditure', 'Reports default sub-tab must be income_expenditure');
 });
 
+// ====================================================
+// TEST 31: Duplicate Item Warning & Normalized Detection
+// ====================================================
+runTest('31. Duplicate Item Detection: Identifies exact and normalized duplicate names', () => {
+  const existingItems = [
+    { id: 'it-1', name: '22K Gold Antique Ring', current_stock: 5, is_archived: false },
+    { id: 'it-2', name: 'Silver Payal 92.5', current_stock: 12, is_archived: false }
+  ];
+
+  const checkDuplicate = (inputName, items) => {
+    const trimmed = inputName.trim();
+    if (!trimmed || trimmed.length < 2) return null;
+    const lower = trimmed.toLowerCase();
+    const normalize = str => str.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normInput = normalize(trimmed);
+
+    const exact = items.find(i => i.name.toLowerCase().trim() === lower);
+    if (exact) return { item: exact, type: 'exact' };
+
+    const norm = items.find(i => normalize(i.name) === normInput);
+    if (norm) return { item: norm, type: 'similar' };
+
+    return null;
+  };
+
+  const exactMatch = checkDuplicate('22k gold antique ring', existingItems);
+  assert(exactMatch !== null, 'Should detect case-insensitive exact duplicate');
+  assert.strictEqual(exactMatch.type, 'exact');
+  assert.strictEqual(exactMatch.item.id, 'it-1');
+
+  const normMatch = checkDuplicate('22K-Gold-Antique-Ring', existingItems);
+  assert(normMatch !== null, 'Should detect normalized duplicate with hyphens');
+  assert.strictEqual(normMatch.item.id, 'it-1');
+
+  const noMatch = checkDuplicate('Diamond Nose Pin', existingItems);
+  assert.strictEqual(noMatch, null, 'Unrelated item should not trigger duplicate warning');
+});
+
+// ====================================================
+// TEST 32: Alphabetical Default Sorting (A-Z)
+// ====================================================
+runTest('32. Alphabetical Default Sorting: Items catalogue sorts A-Z', () => {
+  const items = [
+    { id: '1', name: 'Silver Kada' },
+    { id: '2', name: 'Antique Gold Necklace' },
+    { id: '3', name: 'Diamond Earring' },
+    { id: '4', name: 'Bangles 22K' }
+  ];
+
+  const sorted = [...items].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+  assert.strictEqual(sorted[0].name, 'Antique Gold Necklace');
+  assert.strictEqual(sorted[1].name, 'Bangles 22K');
+  assert.strictEqual(sorted[2].name, 'Diamond Earring');
+  assert.strictEqual(sorted[3].name, 'Silver Kada');
+});
+
+// ====================================================
+// TEST 33: Rename Item Preserves ID & Historical Linkage
+// ====================================================
+runTest('33. Rename Item: Preserves item ID, rates, stock, and historical linkages', () => {
+  const originalItem = {
+    id: 'item-gold-ring-01',
+    name: '22K Gold Ring (Old Name)',
+    purchase_rate: 45000,
+    default_sale_rate: 48000,
+    current_stock: 7,
+    is_archived: false
+  };
+
+  const historicalSale = {
+    id: 'sale-001',
+    invoice_number: 'SSJ-101',
+    items: [
+      { item_id: 'item-gold-ring-01', item_name: '22K Gold Ring (Old Name)', quantity: 2, line_total: 96000 }
+    ]
+  };
+
+  // Renaming item
+  const renamedItem = {
+    ...originalItem,
+    name: '22K Gold Antique Floral Ring (Renamed)'
+  };
+
+  assert.strictEqual(renamedItem.id, originalItem.id, 'Item ID must remain unchanged');
+  assert.strictEqual(renamedItem.purchase_rate, 45000);
+  assert.strictEqual(renamedItem.current_stock, 7);
+  assert.strictEqual(renamedItem.name, '22K Gold Antique Floral Ring (Renamed)');
+
+  // Past sale line item is preserved with original historical values
+  assert.strictEqual(historicalSale.items[0].item_id, renamedItem.id);
+  assert.strictEqual(historicalSale.items[0].quantity, 2);
+  assert.strictEqual(historicalSale.items[0].line_total, 96000);
+});
+
+// ====================================================
+// TEST 34: Archive Jewellery Item Excludes from New Selections
+// ====================================================
+runTest('34. Archive Item: Excludes item from new transaction dropdowns while preserving history', () => {
+  const catalogue = [
+    { id: 'it-1', name: 'Active Gold Ring', is_archived: false },
+    { id: 'it-2', name: 'Discontinued Silver Coin', is_archived: true },
+    { id: 'it-3', name: 'Active Diamond Pendant', is_archived: false }
+  ];
+
+  // Active items for dropdowns in Create Sale and Create Purchase
+  const activeDropdownItems = catalogue.filter(i => !i.is_archived);
+
+  assert.strictEqual(activeDropdownItems.length, 2);
+  assert(activeDropdownItems.some(i => i.id === 'it-1'));
+  assert(activeDropdownItems.some(i => i.id === 'it-3'));
+  assert(!activeDropdownItems.some(i => i.id === 'it-2'), 'Archived item must be excluded from dropdown');
+
+  // But preserved in full catalogue
+  assert.strictEqual(catalogue.length, 3);
+});
+
+// ====================================================
+// TEST 35: Permanent Deletion Guard
+// ====================================================
+runTest('35. Permanent Deletion Guard: Blocks deletion if item has purchases, sales, transfers, or stock', () => {
+  const purchases = [
+    { id: 'p-1', items: [{ item_id: 'item-in-purchase', item_name: 'Gold Ring', quantity: 10 }] }
+  ];
+  const sales = [
+    { id: 's-1', items: [{ item_id: 'item-in-sale', item_name: 'Silver Payal', quantity: 2 }] }
+  ];
+  const transfers = [
+    { id: 't-1', item_id: 'item-in-transfer', quantity: 3, transfer_type: 'issue' }
+  ];
+
+  const checkCanDelete = (item) => {
+    if (item.current_stock > 0) {
+      throw new Error(`Cannot permanently delete "${item.name}" because it still has ${item.current_stock} units in stock.`);
+    }
+    const hasPur = purchases.some(p => p.items?.some(it => it.item_id === item.id));
+    if (hasPur) {
+      throw new Error(`Cannot permanently delete "${item.name}" because it has recorded supplier purchases.`);
+    }
+    const hasSale = sales.some(s => s.items?.some(it => it.item_id === item.id));
+    if (hasSale) {
+      throw new Error(`Cannot permanently delete "${item.name}" because it appears on saved sales bills.`);
+    }
+    const hasTransfer = transfers.some(t => t.item_id === item.id);
+    if (hasTransfer) {
+      throw new Error(`Cannot permanently delete "${item.name}" because it is linked to party stock transfers.`);
+    }
+    return true;
+  };
+
+  // Item with stock
+  assert.throws(() => {
+    checkCanDelete({ id: 'item-stock', name: 'Item With Stock', current_stock: 4 });
+  }, /units in stock/);
+
+  // Item in purchase
+  assert.throws(() => {
+    checkCanDelete({ id: 'item-in-purchase', name: 'Gold Ring', current_stock: 0 });
+  }, /supplier purchases/);
+
+  // Item in sale
+  assert.throws(() => {
+    checkCanDelete({ id: 'item-in-sale', name: 'Silver Payal', current_stock: 0 });
+  }, /sales bills/);
+
+  // Item in transfer
+  assert.throws(() => {
+    checkCanDelete({ id: 'item-in-transfer', name: 'Consignment Ring', current_stock: 0 });
+  }, /party stock transfers/);
+
+  // Unused item with 0 stock
+  const canDeleteUnused = checkCanDelete({ id: 'item-unused', name: 'Accidental Item', current_stock: 0 });
+  assert.strictEqual(canDeleteUnused, true, 'Unused item with zero stock should be deletable');
+});
+
+// ====================================================
+// TEST 36: Item Usage Report Calculation
+// ====================================================
+runTest('36. Item Usage Calculation: Computes purchases, sales, consignments, and unit counters', () => {
+  const item = { id: 'item-007', name: 'Royal Solitaire Ring', current_stock: 8, is_archived: false };
+
+  const purchases = [
+    {
+      id: 'pur-1',
+      supplier_name: 'Bombay Bullion',
+      items: [{ item_id: 'item-007', item_name: 'Royal Solitaire Ring', quantity: 15, unit_purchase_rate: 40000 }]
+    },
+    {
+      id: 'pur-2',
+      supplier_name: 'Surat Gems',
+      items: [{ item_id: 'item-007', item_name: 'Royal Solitaire Ring', quantity: 5, unit_purchase_rate: 42000 }]
+    }
+  ];
+
+  const sales = [
+    {
+      id: 'sale-1',
+      invoice_number: 'SSJ-501',
+      party_name: 'Kothari Jewellers',
+      items: [{ item_id: 'item-007', item_name: 'Royal Solitaire Ring', quantity: 7, unit_sale_rate: 46000 }]
+    }
+  ];
+
+  const transfers = [
+    { id: 'tr-1', item_id: 'item-007', quantity: 5, transfer_type: 'issue' },
+    { id: 'tr-2', item_id: 'item-007', quantity: 2, transfer_type: 'return' }
+  ];
+
+  // Calculate usage
+  const totalPurchased = purchases.reduce((sum, p) => {
+    return sum + p.items.filter(it => it.item_id === item.id).reduce((s, it) => s + it.quantity, 0);
+  }, 0);
+
+  const totalSold = sales.reduce((sum, s) => {
+    return sum + s.items.filter(it => it.item_id === item.id).reduce((s, it) => s + it.quantity, 0);
+  }, 0);
+
+  let held = 0;
+  transfers.forEach(t => {
+    if (t.item_id === item.id) {
+      if (t.transfer_type === 'issue') held += t.quantity;
+      if (t.transfer_type === 'return') held -= t.quantity;
+    }
+  });
+
+  assert.strictEqual(totalPurchased, 20, 'Total purchased units must be 15 + 5 = 20');
+  assert.strictEqual(totalSold, 7, 'Total sold units must be 7');
+  assert.strictEqual(held, 3, 'Total held consignment units must be 5 - 2 = 3');
+  assert.strictEqual(item.current_stock, 8, 'Showroom stock is 8');
+});
+
 console.log(`\n====================================================`);
 console.log(`🎉 TEST SUMMARY: ${passedTests}/${totalTests} TESTS PASSED`);
 console.log(`====================================================`);

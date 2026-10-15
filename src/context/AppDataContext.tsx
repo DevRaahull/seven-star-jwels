@@ -2,7 +2,9 @@ import React, { createContext, useContext, useState, useEffect, useMemo, useCall
 import {
   Item,
   Purchase,
+  PurchaseItem,
   Sale,
+  SaleItem,
   Expense,
   BusinessSettings,
   WholesaleDashboardStats,
@@ -12,7 +14,8 @@ import {
   StockTransfer,
   PartyPayment,
   PartyStockLedgerSummary,
-  PartyMoneyLedgerSummary
+  PartyMoneyLedgerSummary,
+  ItemUsageReport
 } from '../types';
 import { storage } from '../lib/storage';
 
@@ -41,6 +44,7 @@ interface AppDataContextType {
   saveItem: (item: any) => Promise<Item>;
   adjustStock: (itemId: string, quantityChange: number, reason: string) => Promise<Item>;
   archiveOrDeleteItem: (itemId: string, action: 'archive' | 'unarchive' | 'delete') => Promise<void>;
+  getItemUsage: (itemId: string) => ItemUsageReport | null;
   saveExpense: (expense: any) => Promise<Expense>;
   deleteExpense: (id: string) => Promise<void>;
   updateSettings: (newSettings: Partial<BusinessSettings>) => Promise<BusinessSettings>;
@@ -275,6 +279,76 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     await refreshData();
   };
 
+  const getItemUsage = useCallback((itemId: string): ItemUsageReport | null => {
+    const item = items.find(i => i.id === itemId);
+    if (!item) return null;
+
+    const itemNameLower = item.name.toLowerCase().trim();
+
+    // Matching purchases
+    const matchedPurchases: Array<{ purchase: Purchase; item: PurchaseItem }> = [];
+    purchases.forEach(p => {
+      p.items?.forEach(it => {
+        if (it.item_id === itemId || (it.item_name && it.item_name.toLowerCase().trim() === itemNameLower)) {
+          matchedPurchases.push({ purchase: p, item: it });
+        }
+      });
+    });
+
+    // Matching sales
+    const matchedSales: Array<{ sale: Sale; item: SaleItem }> = [];
+    sales.forEach(s => {
+      s.items?.forEach(it => {
+        if (it.item_id === itemId || (it.item_name && it.item_name.toLowerCase().trim() === itemNameLower)) {
+          matchedSales.push({ sale: s, item: it });
+        }
+      });
+    });
+
+    // Matching stock transfers
+    const matchedTransfers = stockTransfers.filter(t => t.item_id === itemId);
+
+    const totalPurchasedQty = matchedPurchases.reduce((sum, p) => sum + (Number(p.item.quantity) || 0), 0);
+    const totalSoldQty = matchedSales.reduce((sum, s) => sum + (Number(s.item.quantity) || 0), 0);
+
+    let issued = 0;
+    let returned = 0;
+    matchedTransfers.forEach(t => {
+      if (t.transfer_type === 'issue') issued += Number(t.quantity) || 0;
+      else if (t.transfer_type === 'return') returned += Number(t.quantity) || 0;
+    });
+    const totalTransferredHeldQty = Math.max(0, issued - returned);
+
+    let canPermanentlyDelete = true;
+    let deleteBlockReason: string | undefined;
+
+    if (item.current_stock > 0) {
+      canPermanentlyDelete = false;
+      deleteBlockReason = `Item has ${item.current_stock} physical unit(s) in showroom stock.`;
+    } else if (matchedPurchases.length > 0) {
+      canPermanentlyDelete = false;
+      deleteBlockReason = `Item is used in ${matchedPurchases.length} supplier purchase record(s).`;
+    } else if (matchedSales.length > 0) {
+      canPermanentlyDelete = false;
+      deleteBlockReason = `Item is used in ${matchedSales.length} sales invoice(s).`;
+    } else if (matchedTransfers.length > 0) {
+      canPermanentlyDelete = false;
+      deleteBlockReason = `Item is used in ${matchedTransfers.length} party consignment transfer(s).`;
+    }
+
+    return {
+      item,
+      purchases: matchedPurchases,
+      sales: matchedSales,
+      transfers: matchedTransfers,
+      totalPurchasedQty,
+      totalSoldQty,
+      totalTransferredHeldQty,
+      canPermanentlyDelete,
+      deleteBlockReason
+    };
+  }, [items, purchases, sales, stockTransfers]);
+
   const saveExpense = async (expenseData: any) => {
     const saved = await storage.saveExpense(expenseData);
     await refreshData();
@@ -390,6 +464,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         saveItem,
         adjustStock,
         archiveOrDeleteItem,
+        getItemUsage,
         saveExpense,
         deleteExpense,
         updateSettings,

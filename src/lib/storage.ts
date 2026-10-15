@@ -466,6 +466,39 @@ class StorageService {
   async archiveOrDeleteItem(itemId: string, action: 'archive' | 'unarchive' | 'delete'): Promise<void> {
     const items = await this.getItems();
     if (action === 'delete') {
+      const itemToDelete = items.find(i => i.id === itemId);
+      if (itemToDelete) {
+        // Guard 1: Physical showroom stock
+        if (itemToDelete.current_stock > 0) {
+          throw new Error(`Cannot permanently delete "${itemToDelete.name}" because it still has ${itemToDelete.current_stock} units in stock. You can Archive it instead, or adjust stock to 0.`);
+        }
+
+        // Guard 2: Supplier purchases history
+        const purchases = await this.getPurchases();
+        const hasPurchases = purchases.some(p =>
+          p.items?.some(it => it.item_id === itemId || (it.item_name && it.item_name.toLowerCase().trim() === itemToDelete.name.toLowerCase().trim()))
+        );
+        if (hasPurchases) {
+          throw new Error(`Cannot permanently delete "${itemToDelete.name}" because it has recorded supplier purchases. Please Archive it instead to keep historical accounts intact.`);
+        }
+
+        // Guard 3: Customer sales invoices history
+        const sales = await this.getSales();
+        const hasSales = sales.some(s =>
+          s.items?.some(it => it.item_id === itemId || (it.item_name && it.item_name.toLowerCase().trim() === itemToDelete.name.toLowerCase().trim()))
+        );
+        if (hasSales) {
+          throw new Error(`Cannot permanently delete "${itemToDelete.name}" because it appears on saved sales bills. Please Archive it instead to protect invoice records.`);
+        }
+
+        // Guard 4: Party consignment stock transfers
+        const transfers = await this.getStockTransfers();
+        const hasTransfers = transfers.some(t => t.item_id === itemId);
+        if (hasTransfers) {
+          throw new Error(`Cannot permanently delete "${itemToDelete.name}" because it is linked to party stock transfers. Please Archive it instead.`);
+        }
+      }
+
       this.saveToLocal(STORAGE_KEYS.ITEMS, items.filter(i => i.id !== itemId));
       const client = getSupabaseClient();
       if (client) await client.from('items').delete().eq('id', itemId);

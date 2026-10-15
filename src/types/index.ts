@@ -303,3 +303,21 @@ export type DateFilterPreset =
   | 'last_month'
   | 'financial_year'
   | 'custom';
+
+export interface ItemUsageReport {
+  item: Item;
+  purchases: Array<{
+    purchase: Purchase;
+    item: PurchaseItem;
+  }>;
+  sales: Array<{
+    sale: Sale;
+    item: SaleItem;
+  }>;
+  transfers: StockTransfer[];
+  totalPurchasedQty: number;
+  totalSoldQty: number;
+  totalTransferredHeldQty: number;
+  canPermanentlyDelete: boolean;
+  deleteBlockReason?: string;
+}

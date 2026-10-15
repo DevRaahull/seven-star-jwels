@@ -21,6 +21,10 @@ import { formatCurrency, formatDate } from '../../lib/formatters';
 import { exportToCsv } from '../../lib/exportUtils';
 import { ItemFormModal } from '../items/ItemFormModal';
 import { StockAdjustModal } from '../items/StockAdjustModal';
+import { CreateJewelleryItemSection } from '../items/CreateJewelleryItemSection';
+import { ExistingJewelleryItemsSection } from '../items/ExistingJewelleryItemsSection';
+import { ItemRenameModal } from '../items/ItemRenameModal';
+import { ItemUsageModal } from '../items/ItemUsageModal';
 
 export const InventoryView: React.FC = () => {
   const { items, purchases, sales, archiveOrDeleteItem, getStockMovementPeriod } = useAppData();
@@ -36,6 +40,12 @@ export const InventoryView: React.FC = () => {
   const [customEnd, setCustomEnd] = useState('');
   const [movementData, setMovementData] = useState<StockMovementPeriod[]>([]);
   const [isLoadingMovements, setIsLoadingMovements] = useState(false);
+
+  // Subtab navigation
+  const [activeSubTab, setActiveSubTab] = useState<'catalogue' | 'stock_ledger'>('catalogue');
+  const [itemToRename, setItemToRename] = useState<Item | null>(null);
+  const [itemForUsage, setItemForUsage] = useState<Item | null>(null);
+  const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
 
   // Modals state
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -219,34 +229,103 @@ export const InventoryView: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#1E2B45]">
         <div>
           <h2 className="text-xl lg:text-2xl font-serif font-bold text-gold-gradient tracking-wide">
-            Wholesale Inventory & Stock Status
+            Jewellery Items & Inventory
           </h2>
           <p className="text-xs text-[#AAB4C5] mt-0.5">
-            Monitor real-time inventory levels, cost valuation, and period stock movement (Opening + In − Out = Closing).
+            Add new items, manage design catalogue, monitor showroom stock, and track period movements.
           </p>
         </div>
 
         <div className="flex items-center gap-2.5">
-          <button
-            onClick={handleExportCsv}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-[#16233B] hover:bg-[#1E2E4A] border border-[#1E2B45] text-[#D6B36A] rounded-xl text-xs font-semibold shadow transition active:scale-95"
-          >
-            <FileSpreadsheet size={15} />
-            <span>Export CSV</span>
-          </button>
+          {activeSubTab === 'stock_ledger' && (
+            <button
+              onClick={handleExportCsv}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-[#16233B] hover:bg-[#1E2E4A] border border-[#1E2B45] text-[#D6B36A] rounded-xl text-xs font-semibold shadow transition active:scale-95"
+            >
+              <FileSpreadsheet size={15} />
+              <span>Export CSV</span>
+            </button>
+          )}
 
           <button
-            onClick={() => setIsCreateModalOpen(true)}
+            onClick={() => {
+              setActiveSubTab('catalogue');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
             className="flex items-center gap-1.5 px-4 py-2 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold shadow transition active:scale-95"
           >
             <Plus size={15} strokeWidth={2.5} />
-            <span>Add Jewellery Item</span>
+            <span>Create New Item</span>
           </button>
         </div>
       </div>
 
-      {/* 4 Top Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Sub-navigation Tabs */}
+      <div className="flex items-center gap-2 bg-[#111B2E] p-1.5 rounded-xl border border-[#1E2B45] w-full sm:w-auto overflow-x-auto">
+        <button
+          onClick={() => setActiveSubTab('catalogue')}
+          className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
+            activeSubTab === 'catalogue'
+              ? 'bg-[#D6B36A] text-[#0B1220] shadow'
+              : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
+          }`}
+        >
+          <Boxes size={15} />
+          <span>Jewellery Items (Create & Manage)</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${
+            activeSubTab === 'catalogue' ? 'bg-[#0B1220]/25 text-[#0B1220]' : 'bg-[#16233B] text-[#D6B36A]'
+          }`}>
+            {items.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('stock_ledger')}
+          className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
+            activeSubTab === 'stock_ledger'
+              ? 'bg-[#D6B36A] text-[#0B1220] shadow'
+              : 'text-[#AAB4C5] hover:text-[#F5F3EE]'
+          }`}
+        >
+          <Layers size={15} />
+          <span>Stock Status & Movements Ledger</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${
+            activeSubTab === 'stock_ledger' ? 'bg-[#0B1220]/25 text-[#0B1220]' : 'bg-[#16233B] text-[#D6B36A]'
+          }`}>
+            {metrics.totalUnits}u
+          </span>
+        </button>
+      </div>
+
+      {/* SUBTAB 1: JEWELLERY ITEMS CATALOGUE (SECTION A & SECTION B) */}
+      {activeSubTab === 'catalogue' && (
+        <div className="space-y-6 animate-in fade-in">
+          {/* SECTION A: CREATE NEW JEWELLERY ITEM */}
+          <CreateJewelleryItemSection
+            onItemCreated={(newItem) => {
+              setHighlightItemId(newItem.id);
+              setTimeout(() => setHighlightItemId(null), 5000);
+            }}
+            onFocusExistingItem={(existing) => {
+              setHighlightItemId(existing.id);
+              setTimeout(() => setHighlightItemId(null), 5000);
+            }}
+          />
+
+          {/* SECTION B: EXISTING JEWELLERY ITEMS */}
+          <ExistingJewelleryItemsSection
+            onEditName={(item) => setItemToRename(item)}
+            onViewUsage={(item) => setItemForUsage(item)}
+            highlightItemId={highlightItemId}
+          />
+        </div>
+      )}
+
+      {/* SUBTAB 2: DETAILED STOCK LEDGER & MOVEMENTS */}
+      {activeSubTab === 'stock_ledger' && (
+        <div className="space-y-6 animate-in fade-in">
+          {/* 4 Top Metric Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-xs text-[#AAB4C5] font-medium">Unique Jewellery Designs</span>
@@ -614,6 +693,31 @@ export const InventoryView: React.FC = () => {
           </table>
         </div>
       </div>
+    </div>
+  )}
+
+      {/* Item Rename Modal */}
+      {itemToRename && (
+        <ItemRenameModal
+          item={itemToRename}
+          onClose={() => setItemToRename(null)}
+          onSuccess={(renamed) => {
+            setHighlightItemId(renamed.id);
+            setTimeout(() => setHighlightItemId(null), 4000);
+          }}
+        />
+      )}
+
+      {/* Item Usage Modal */}
+      {itemForUsage && (
+        <ItemUsageModal
+          item={itemForUsage}
+          onClose={() => setItemForUsage(null)}
+          onArchiveToggle={() => {
+            setItemForUsage(null);
+          }}
+        />
+      )}
 
       {/* Modals */}
       {isCreateModalOpen && (

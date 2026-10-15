@@ -39,7 +39,9 @@ export const SalesEntryView: React.FC = () => {
   const { items, sales, states, parties, settings, createSale, updateSale, deleteSale } = useAppData();
 
   const activeItems = useMemo(() => {
-    return items.filter(i => !i.is_archived);
+    return items
+      .filter(i => !i.is_archived)
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   }, [items]);
 
   const activeStates = useMemo(() => {

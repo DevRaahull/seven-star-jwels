@@ -607,6 +607,7 @@ export const PurchaseEntryView: React.FC = () => {
                               <optgroup label="Existing Inventory Items">
                                 {items
                                   .filter(i => !i.is_archived)
+                                  .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
                                   .map(i => (
                                     <option key={i.id} value={i.id}>
                                       {i.name} (Stock: {i.current_stock})

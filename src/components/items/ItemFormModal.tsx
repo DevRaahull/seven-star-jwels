@@ -99,12 +99,23 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({ itemToEdit, onClos
     // Check duplicate SKU if provided
     if (sku.trim()) {
       const duplicateSku = items.find(
-        i => i.sku?.toLowerCase() === sku.trim().toLowerCase() && (!isEditing || i.id !== itemToEdit.id)
+        i => i.sku?.toLowerCase() === sku.trim().toLowerCase() && (!isEditing || i.id !== itemToEdit?.id)
       );
       if (duplicateSku) {
         setErrorMessage(`Item code / SKU "${sku.trim()}" is already assigned to "${duplicateSku.name}".`);
         return;
       }
+    }
+
+    // Check duplicate Name if creating new or renaming
+    const duplicateName = items.find(
+      i => i.name.toLowerCase().trim() === name.trim().toLowerCase() && (!isEditing || i.id !== itemToEdit?.id)
+    );
+    if (duplicateName && !isEditing) {
+      const confirmSave = window.confirm(
+        `An item named "${duplicateName.name}" already exists in your inventory. Do you still want to add another item with this name?`
+      );
+      if (!confirmSave) return;
     }
 
     setIsSubmitting(true);
