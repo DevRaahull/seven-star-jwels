@@ -18,7 +18,8 @@ import {
   Package,
   Layers,
   ArrowDownCircle,
-  ArrowUpCircle
+  ArrowUpCircle,
+  Trash2
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext';
 import { formatCurrency, formatDate } from '../../lib/formatters';
@@ -33,7 +34,9 @@ export const StatesPartiesView: React.FC = () => {
     partyPayments,
     sales,
     saveState,
+    archiveState,
     saveParty,
+    archiveParty,
     createStockTransfer,
     recordPartyPayment,
     getPartyLedger
@@ -87,6 +90,10 @@ export const StatesPartiesView: React.FC = () => {
   const [payMethod, setPayMethod] = useState('UPI');
   const [payRef, setPayRef] = useState('');
   const [payNotes, setPayNotes] = useState('');
+
+  // Deletion modals state
+  const [stateToDelete, setStateToDelete] = useState<{ id: string; name: string; partyCount: number } | null>(null);
+  const [partyToDelete, setPartyToDelete] = useState<{ id: string; name: string; heldStock: number } | null>(null);
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -220,6 +227,32 @@ export const StatesPartiesView: React.FC = () => {
       setTimeout(() => setSuccessMessage(null), 3000);
     } catch (err: any) {
       setErrorMessage(err.message || 'Failed to save state.');
+    }
+  };
+
+  const handleConfirmDeleteState = async () => {
+    if (!stateToDelete) return;
+    setErrorMessage(null);
+    try {
+      await archiveState(stateToDelete.id);
+      setSuccessMessage(`State "${stateToDelete.name}" removed successfully.`);
+      setStateToDelete(null);
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to remove state.');
+    }
+  };
+
+  const handleConfirmDeleteParty = async () => {
+    if (!partyToDelete) return;
+    setErrorMessage(null);
+    try {
+      await archiveParty(partyToDelete.id);
+      setSuccessMessage(`Party "${partyToDelete.name}" removed successfully.`);
+      setPartyToDelete(null);
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to remove party.');
     }
   };
 
@@ -465,16 +498,26 @@ export const StatesPartiesView: React.FC = () => {
                       <p className="text-[11px] text-[#AAB4C5]">{state.partyCount} Registered Parties</p>
                     </div>
                   </div>
-                  <button
-                    onClick={() => {
-                      setSelectedStateFilter(state.id);
-                      setActiveViewTab('parties');
-                    }}
-                    className="text-xs text-[#D6B36A] hover:underline flex items-center gap-1 font-medium"
-                  >
-                    <span>View</span>
-                    <ChevronRight size={14} />
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => {
+                        setSelectedStateFilter(state.id);
+                        setActiveViewTab('parties');
+                      }}
+                      className="text-xs text-[#D6B36A] hover:bg-[#D6B36A]/10 px-2 py-1 rounded-lg flex items-center gap-1 font-medium transition"
+                      title="View Parties in this State"
+                    >
+                      <span>Parties</span>
+                      <ChevronRight size={14} />
+                    </button>
+                    <button
+                      onClick={() => setStateToDelete({ id: state.id, name: state.name, partyCount: state.partyCount })}
+                      className="p-1.5 text-[#7A8699] hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition"
+                      title="Remove State"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
                 </div>
 
                 {state.notes && (
@@ -586,27 +629,36 @@ export const StatesPartiesView: React.FC = () => {
                         </span>
                       </div>
 
-                      {/* Phone quick buttons */}
-                      {party.phone && (
-                        <div className="flex items-center gap-1">
-                          <a
-                            href={`tel:${party.phone}`}
-                            className="p-1.5 bg-[#16233B] hover:bg-[#1E2E4A] text-emerald-400 rounded-lg transition"
-                            title="Call party directly"
-                          >
-                            <Phone size={14} />
-                          </a>
-                          <a
-                            href={`https://wa.me/${party.phone.replace(/[^0-9]/g, '')}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-1.5 bg-[#16233B] hover:bg-[#1E2E4A] text-emerald-400 rounded-lg transition"
-                            title="Chat on WhatsApp"
-                          >
-                            <MessageCircle size={14} />
-                          </a>
-                        </div>
-                      )}
+                      <div className="flex items-center gap-1">
+                        {/* Phone quick buttons */}
+                        {party.phone && (
+                          <>
+                            <a
+                              href={`tel:${party.phone}`}
+                              className="p-1.5 bg-[#16233B] hover:bg-[#1E2E4A] text-emerald-400 rounded-lg transition"
+                              title="Call party directly"
+                            >
+                              <Phone size={14} />
+                            </a>
+                            <a
+                              href={`https://wa.me/${party.phone.replace(/[^0-9]/g, '')}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="p-1.5 bg-[#16233B] hover:bg-[#1E2E4A] text-emerald-400 rounded-lg transition"
+                              title="Chat on WhatsApp"
+                            >
+                              <MessageCircle size={14} />
+                            </a>
+                          </>
+                        )}
+                        <button
+                          onClick={() => setPartyToDelete({ id: party.id, name: party.name, heldStock: sm.heldStock })}
+                          className="p-1.5 bg-[#16233B] hover:bg-rose-500/10 text-[#7A8699] hover:text-rose-400 rounded-lg transition"
+                          title="Remove Party"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
                     </div>
 
                     {party.notes && (
@@ -1482,6 +1534,100 @@ export const StatesPartiesView: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRM REMOVE STATE MODAL */}
+      {stateToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-[#111B2E] border border-rose-500/30 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="p-2 bg-rose-500/10 rounded-xl">
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <h3 className="font-semibold text-sm text-[#F5F3EE]">Remove State</h3>
+                <p className="text-[11px] text-[#AAB4C5]">{stateToDelete.name}</p>
+              </div>
+            </div>
+
+            {stateToDelete.partyCount > 0 ? (
+              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs space-y-1">
+                <p className="font-semibold">⚠️ Active Parties Warning</p>
+                <p>
+                  This state has <strong>{stateToDelete.partyCount}</strong> registered party/parties. Removing this state will archive it.
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-[#AAB4C5]">
+                Are you sure you want to remove <strong>{stateToDelete.name}</strong> from your states list?
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setStateToDelete(null)}
+                className="px-3 py-1.5 bg-[#16233B] text-[#AAB4C5] hover:text-[#F5F3EE] rounded-lg text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteState}
+                className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold shadow transition active:scale-95"
+              >
+                Remove State
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRM REMOVE PARTY MODAL */}
+      {partyToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-[#111B2E] border border-rose-500/30 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="p-2 bg-rose-500/10 rounded-xl">
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <h3 className="font-semibold text-sm text-[#F5F3EE]">Remove Party</h3>
+                <p className="text-[11px] text-[#AAB4C5]">{partyToDelete.name}</p>
+              </div>
+            </div>
+
+            {partyToDelete.heldStock > 0 ? (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs space-y-1">
+                <p className="font-semibold">⚠️ Stock Held Warning</p>
+                <p>
+                  This party currently holds <strong>{partyToDelete.heldStock} pieces</strong> on consignment. Please ensure stock is accounted for before removing.
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-[#AAB4C5]">
+                Are you sure you want to remove <strong>{partyToDelete.name}</strong> from your party list? Past transactions will remain intact.
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setPartyToDelete(null)}
+                className="px-3 py-1.5 bg-[#16233B] text-[#AAB4C5] hover:text-[#F5F3EE] rounded-lg text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteParty}
+                className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold shadow transition active:scale-95"
+              >
+                Remove Party
+              </button>
+            </div>
           </div>
         </div>
       )}

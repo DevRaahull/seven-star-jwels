@@ -547,6 +547,30 @@ runTest('23. Backup & Restore: Includes states, parties, stock transfers, and pa
   assert.strictEqual(parsed.party_payments[0].amount, 5000);
 });
 
+// ====================================================
+// TEST 24: Remove / Archive State
+// ====================================================
+runTest('24. Remove State: State is archived and safely removed from active views', () => {
+  const states = [
+    { id: 'st-1', name: 'Maharashtra', is_archived: false },
+    { id: 'st-2', name: 'Goa', is_archived: false }
+  ];
+
+  const archiveState = (id) => {
+    const s = states.find(x => x.id === id);
+    if (!s) throw new Error('State not found');
+    s.is_archived = true;
+  };
+
+  // Archive Goa
+  archiveState('st-2');
+  const activeStates = states.filter(s => !s.is_archived);
+
+  assert.strictEqual(activeStates.length, 1);
+  assert.strictEqual(activeStates[0].name, 'Maharashtra');
+  assert.strictEqual(states.find(s => s.id === 'st-2').is_archived, true);
+});
+
 console.log(`\n====================================================`);
 console.log(`🎉 TEST SUMMARY: ${passedTests}/${totalTests} TESTS PASSED`);
 console.log(`====================================================`);
