@@ -52,10 +52,49 @@ interface AppDataContextType {
   getStockMovementPeriod: (startDate: Date, endDate: Date) => Promise<StockMovementPeriod[]>;
   saveState: (stateData: { id?: string; name: string; notes?: string }) => Promise<StateRecord>;
   archiveState: (id: string) => Promise<void>;
-  saveParty: (partyData: { id?: string; state_id: string; name: string; phone?: string; notes?: string; opening_balance?: number }) => Promise<PartyRecord>;
+  saveParty: (partyData: {
+    id?: string;
+    state_id: string;
+    name: string;
+    phone?: string;
+    address?: string;
+    notes?: string;
+    opening_balance?: number;
+    opening_stock?: number;
+  }) => Promise<PartyRecord>;
   archiveParty: (id: string) => Promise<void>;
-  createStockTransfer: (data: { transfer_date?: string; destination_state_id: string; destination_party_id: string; item_id: string; quantity: number; transfer_type: 'issue' | 'return'; notes?: string }) => Promise<StockTransfer>;
-  recordPartyPayment: (data: { party_id: string; payment_date?: string; amount: number; payment_type: 'received' | 'paid'; payment_method?: string; reference?: string; notes?: string }) => Promise<PartyPayment>;
+  createStockTransfer: (data: {
+    transfer_date?: string;
+    reference_no?: string;
+    destination_state_id: string;
+    destination_party_id: string;
+    item_id: string;
+    quantity: number;
+    rate?: number;
+    transfer_type: StockTransferType;
+    status?: 'pending' | 'completed' | 'cancelled';
+    notes?: string;
+  }) => Promise<StockTransfer>;
+  updateStockTransfer: (id: string, data: {
+    transfer_date?: string;
+    reference_no?: string;
+    item_id?: string;
+    quantity?: number;
+    rate?: number;
+    transfer_type?: StockTransferType;
+    status?: 'pending' | 'completed' | 'cancelled';
+    notes?: string;
+  }) => Promise<StockTransfer>;
+  deleteStockTransfer: (id: string) => Promise<void>;
+  recordPartyPayment: (data: {
+    party_id: string;
+    payment_date?: string;
+    amount: number;
+    payment_type: 'received' | 'paid';
+    payment_method?: string;
+    reference?: string;
+    notes?: string;
+  }) => Promise<PartyPayment>;
   getPartyLedger: (partyId: string) => Promise<{
     party: PartyRecord;
     state?: StateRecord;
@@ -392,8 +431,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     state_id: string;
     name: string;
     phone?: string;
+    address?: string;
     notes?: string;
     opening_balance?: number;
+    opening_stock?: number;
   }) => {
     const saved = await storage.saveParty(partyData);
     await refreshData();
@@ -407,16 +448,39 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const createStockTransfer = async (data: {
     transfer_date?: string;
+    reference_no?: string;
     destination_state_id: string;
     destination_party_id: string;
     item_id: string;
     quantity: number;
-    transfer_type: 'issue' | 'return';
+    rate?: number;
+    transfer_type: StockTransferType;
+    status?: 'pending' | 'completed' | 'cancelled';
     notes?: string;
   }) => {
     const created = await storage.createStockTransfer(data);
     await refreshData();
     return created;
+  };
+
+  const updateStockTransfer = async (id: string, data: {
+    transfer_date?: string;
+    reference_no?: string;
+    item_id?: string;
+    quantity?: number;
+    rate?: number;
+    transfer_type?: StockTransferType;
+    status?: 'pending' | 'completed' | 'cancelled';
+    notes?: string;
+  }) => {
+    const updated = await storage.updateStockTransfer(id, data);
+    await refreshData();
+    return updated;
+  };
+
+  const deleteStockTransfer = async (id: string) => {
+    await storage.deleteStockTransfer(id);
+    await refreshData();
   };
 
   const recordPartyPayment = async (data: {
@@ -475,6 +539,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         saveParty,
         archiveParty,
         createStockTransfer,
+        updateStockTransfer,
+        deleteStockTransfer,
         recordPartyPayment,
         getPartyLedger
       }}

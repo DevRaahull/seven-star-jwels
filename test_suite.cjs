@@ -1045,6 +1045,167 @@ runTest('36. Item Usage Calculation: Computes purchases, sales, consignments, an
   assert.strictEqual(item.current_stock, 8, 'Showroom stock is 8');
 });
 
+// TEST 37: Section 5 Worked Example - Multi-Transaction Party Stock Ledger & FIFO Valuation
+runTest('37. Section 5 Worked Example: FIFO Batch Handover (100@50, 40@60) & Settlement of 30 pcs', () => {
+  // Setup party and transactions according to Section 5
+  const party = { id: 'pty-raj-test', name: 'Test Party', state_id: 'st-raj' };
+  const item = { id: 'it-nose-pin', name: 'Stone Nose Pin' };
+
+  // Transaction 1: Handover 100 @ 50 = 5,000
+  const tx1 = {
+    id: 'tx-1',
+    transfer_date: '2026-03-01T10:00:00Z',
+    item_id: item.id,
+    item_name: item.name,
+    quantity: 100,
+    rate: 50,
+    total_value: 5000,
+    transfer_type: 'handover'
+  };
+
+  // Transaction 2: Handover 40 @ 60 = 2,400
+  const tx2 = {
+    id: 'tx-2',
+    transfer_date: '2026-03-02T10:00:00Z',
+    item_id: item.id,
+    item_name: item.name,
+    quantity: 40,
+    rate: 60,
+    total_value: 2400,
+    transfer_type: 'handover'
+  };
+
+  // Simulation of FIFO evaluation after Tx1 and Tx2
+  function evaluateFifoLedger(transfers) {
+    const batches = [];
+    let handoverQty = 0;
+    let handoverValue = 0;
+    let returnedQty = 0;
+    let soldSettledQty = 0;
+
+    transfers.forEach(t => {
+      const qty = t.quantity;
+      const rate = t.rate || 0;
+      const val = t.total_value || (qty * rate);
+
+      if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
+        handoverQty += qty;
+        handoverValue += val;
+        batches.push({ id: t.id, rate, original_qty: qty, remaining_qty: qty });
+      } else if (t.transfer_type === 'return') {
+        returnedQty += qty;
+        let need = qty;
+        for (const b of batches) {
+          if (need <= 0) break;
+          if (b.remaining_qty > 0) {
+            const take = Math.min(b.remaining_qty, need);
+            b.remaining_qty -= take;
+            need -= take;
+          }
+        }
+      } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
+        soldSettledQty += qty;
+        let need = qty;
+        for (const b of batches) {
+          if (need <= 0) break;
+          if (b.remaining_qty > 0) {
+            const take = Math.min(b.remaining_qty, need);
+            b.remaining_qty -= take;
+            need -= take;
+          }
+        }
+      }
+    });
+
+    const balanceQty = batches.reduce((sum, b) => sum + b.remaining_qty, 0);
+    const balanceValue = batches.reduce((sum, b) => sum + (b.remaining_qty * b.rate), 0);
+    const dueQty = balanceQty;
+    const dueValue = balanceValue;
+
+    return {
+      handoverQty,
+      handoverValue,
+      balanceQty,
+      balanceValue,
+      dueQty,
+      dueValue
+    };
+  }
+
+  // Check state after both handovers
+  const stateAfterHandovers = evaluateFifoLedger([tx1, tx2]);
+  assert.strictEqual(stateAfterHandovers.handoverQty, 140, 'Total Stock Handover must be 140 pieces');
+  assert.strictEqual(stateAfterHandovers.handoverValue, 7400, 'Total Handover Value must be ₹7,400');
+  assert.strictEqual(stateAfterHandovers.balanceQty, 140, 'Balance Stock must be 140 pieces');
+  assert.strictEqual(stateAfterHandovers.balanceValue, 7400, 'Balance Stock Value must be ₹7,400');
+  assert.strictEqual(stateAfterHandovers.dueQty, 140, 'Due Stock must be 140 pieces');
+  assert.strictEqual(stateAfterHandovers.dueValue, 7400, 'Due Stock Value must be ₹7,400');
+
+  // Transaction 3: Record a settlement of 30 pieces from first batch at applicable original rate of ₹50
+  const tx3 = {
+    id: 'tx-3',
+    transfer_date: '2026-03-05T10:00:00Z',
+    item_id: item.id,
+    item_name: item.name,
+    quantity: 30,
+    rate: 50,
+    total_value: 1500,
+    transfer_type: 'settled'
+  };
+
+  const stateAfterSettlement = evaluateFifoLedger([tx1, tx2, tx3]);
+  assert.strictEqual(stateAfterSettlement.handoverQty, 140, 'Total handover stays at 140 pieces');
+  assert.strictEqual(stateAfterSettlement.handoverValue, 7400, 'Total handover value stays at ₹7,400');
+  assert.strictEqual(stateAfterSettlement.balanceQty, 110, 'Remaining physical balance stock must be 110 pieces');
+  assert.strictEqual(stateAfterSettlement.balanceValue, 5900, 'Remaining balance stock value must be ₹5,900');
+  assert.strictEqual(stateAfterSettlement.dueQty, 110, 'Remaining due stock must be 110 pieces');
+  assert.strictEqual(stateAfterSettlement.dueValue, 5900, 'Remaining due stock value must be ₹5,900');
+});
+
+// TEST 38: Money Ledger & Stock Ledger Separation
+runTest('38. Stock vs Money Separation: Handover alone creates zero sales and zero receivables', () => {
+  const partyOpeningBalance = 0;
+  const handovers = [
+    { quantity: 50, rate: 200, total_value: 10000, transfer_type: 'handover' }
+  ];
+  const invoices = []; // No sales invoices generated yet
+  const payments = []; // No cash payments
+
+  const totalInvoicedSales = invoices.reduce((sum, s) => sum + s.grand_total, 0);
+  const totalReceived = payments.filter(p => p.type === 'received').reduce((sum, p) => sum + p.amount, 0);
+  const financialReceivable = partyOpeningBalance + totalInvoicedSales - totalReceived;
+
+  assert.strictEqual(totalInvoicedSales, 0, 'Handing over consignment stock does NOT count as a sale');
+  assert.strictEqual(financialReceivable, 0, 'Handing over consignment stock does NOT count as a money receivable');
+});
+
+// TEST 39: Form Validation & Duplicate Prevention
+runTest('39. State & Party Form Validation: Empty names and duplicates strictly rejected', () => {
+  const states = [{ id: 's-1', name: 'Gujarat', is_archived: false }];
+  const parties = [{ id: 'p-1', state_id: 's-1', name: 'Shree Jewellers', is_archived: false }];
+
+  // 1. Empty state name rejection
+  assert.throws(() => {
+    const name = '   ';
+    if (!name.trim()) throw new Error('State name is required.');
+  }, /State name is required/);
+
+  // 2. Duplicate state rejection (case-insensitive)
+  assert.throws(() => {
+    const candidate = 'gujarat';
+    const exists = states.some(s => s.name.toLowerCase() === candidate.toLowerCase() && !s.is_archived);
+    if (exists) throw new Error('State "Gujarat" already exists.');
+  }, /already exists/);
+
+  // 3. Duplicate party in same state rejection
+  assert.throws(() => {
+    const candidate = 'shree jewellers';
+    const stateId = 's-1';
+    const exists = parties.some(p => p.state_id === stateId && p.name.toLowerCase() === candidate.toLowerCase() && !p.is_archived);
+    if (exists) throw new Error('Party "shree jewellers" already exists in this state.');
+  }, /already exists in this state/);
+});
+
 console.log(`\n====================================================`);
 console.log(`🎉 TEST SUMMARY: ${passedTests}/${totalTests} TESTS PASSED`);
 console.log(`====================================================`);

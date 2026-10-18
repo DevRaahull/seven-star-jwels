@@ -141,25 +141,34 @@ export interface PartyRecord {
   state_id: string;
   name: string;
   phone?: string;
+  address?: string;
   notes?: string;
   opening_balance?: number; // Positive = Party owes us (Receivable), Negative = We owe party (Payable)
+  opening_stock?: number;   // Optional initial stock count held by party
   is_archived?: boolean;
   created_at: string;
   updated_at: string;
 }
 
+export type StockTransferType = 'handover' | 'issue' | 'return' | 'settled' | 'sale' | 'adjustment';
+
 export interface StockTransfer {
   id: string;
   user_id?: string;
+  reference_no?: string;
   transfer_date: string;
   destination_state_id: string;
   destination_party_id: string;
   item_id: string;
   item_name: string;
   quantity: number;
-  transfer_type: 'issue' | 'return'; // 'issue' = main to party, 'return' = party back to main
+  rate?: number;
+  total_value?: number;
+  transfer_type: StockTransferType;
+  status?: 'pending' | 'completed' | 'cancelled';
   notes?: string;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface PartyPayment {
@@ -175,19 +184,42 @@ export interface PartyPayment {
   created_at: string;
 }
 
+export interface PartyStockItemLedger {
+  item_id: string;
+  item_name: string;
+  handover_qty: number;
+  handover_value: number;
+  returned_qty: number;
+  returned_value: number;
+  sold_settled_qty: number;
+  sold_settled_value: number;
+  balance_qty: number;
+  balance_value: number;
+  due_qty: number;
+  due_value: number;
+  // Backwards compatibility aliases
+  issued_qty: number;
+  held_qty: number;
+  sold_qty: number;
+}
+
 export interface PartyStockLedgerSummary {
   party_id: string;
   party_name: string;
   state_id: string;
   state_name: string;
-  items: Array<{
-    item_id: string;
-    item_name: string;
-    issued_qty: number;
-    returned_qty: number;
-    sold_qty: number;
-    held_qty: number;
-  }>;
+  items: PartyStockItemLedger[];
+  // Three Essential Displays:
+  // A. Stock Handover
+  total_handover_qty: number;
+  total_handover_value: number;
+  // B. Balanced Stock (Balance Stock)
+  total_balance_qty: number;
+  total_balance_value: number;
+  // C. Due Stock
+  total_due_qty: number;
+  total_due_value: number;
+  // Backwards compatibility alias:
   total_held_pieces: number;
 }
 

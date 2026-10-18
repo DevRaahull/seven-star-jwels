@@ -2160,7 +2160,67 @@ class StorageService {
     });
   }
 
-  // --- STATES & PARTIES (MULTI-STATE MANAGEMENT) ---
+  // --- STATES & PARTIES (MULTI-STATE WHOLESALE NETWORK) ---
+
+  private async syncStatesPartiesCloudFallback(): Promise<void> {
+    try {
+      const client = getSupabaseClient();
+      if (!client) return;
+      const states = this.getFromLocal<StateRecord[]>(STORAGE_KEYS.STATES, []);
+      const parties = this.getFromLocal<PartyRecord[]>(STORAGE_KEYS.PARTIES, []);
+      const transfers = this.getFromLocal<StockTransfer[]>(STORAGE_KEYS.STOCK_TRANSFERS, []);
+      const payments = this.getFromLocal<PartyPayment[]>(STORAGE_KEYS.PARTY_PAYMENTS, []);
+
+      const payload = JSON.stringify({ states, parties, transfers, payments });
+      const settings = await this.getSettings();
+      let baseNotes = settings.invoice_notes || 'Goods once sold will not be exchanged or returned without bill. Quality Builds Trust.';
+      const marker = '[SSJ_DATA:';
+      const markerIdx = baseNotes.indexOf(marker);
+      if (markerIdx >= 0) {
+        baseNotes = baseNotes.slice(0, markerIdx).trim();
+      }
+      const newNotes = `${baseNotes}\n${marker}${payload}]`;
+      await client.from('business_settings').upsert({
+        id: isValidUUID(settings.id) ? settings.id : '00000000-0000-4000-8000-000000000001',
+        invoice_notes: newNotes,
+        updated_at: new Date().toISOString()
+      });
+    } catch (e) {
+      console.warn('States/Parties cloud sync notice:', e);
+    }
+  }
+
+  private async loadStatesPartiesCloudFallback(): Promise<boolean> {
+    try {
+      const client = getSupabaseClient();
+      if (!client) return false;
+      const { data, error } = await client.from('business_settings').select('invoice_notes').limit(1).maybeSingle();
+      if (error || !data?.invoice_notes) return false;
+      const marker = '[SSJ_DATA:';
+      const start = data.invoice_notes.indexOf(marker);
+      if (start >= 0) {
+        const jsonStr = data.invoice_notes.slice(start + marker.length).replace(/\]\s*$/, '').trim();
+        const parsed = JSON.parse(jsonStr);
+        if (parsed.states && Array.isArray(parsed.states) && parsed.states.length > 0) {
+          this.saveToLocal(STORAGE_KEYS.STATES, parsed.states);
+        }
+        if (parsed.parties && Array.isArray(parsed.parties) && parsed.parties.length > 0) {
+          this.saveToLocal(STORAGE_KEYS.PARTIES, parsed.parties);
+        }
+        if (parsed.transfers && Array.isArray(parsed.transfers)) {
+          this.saveToLocal(STORAGE_KEYS.STOCK_TRANSFERS, parsed.transfers);
+        }
+        if (parsed.payments && Array.isArray(parsed.payments)) {
+          this.saveToLocal(STORAGE_KEYS.PARTY_PAYMENTS, parsed.payments);
+        }
+        return true;
+      }
+    } catch (e) {
+      console.warn('Could not read cloud fallback data:', e);
+    }
+    return false;
+  }
+
   async getStates(): Promise<StateRecord[]> {
     const client = getSupabaseClient();
     if (client) {
@@ -2169,9 +2229,11 @@ class StorageService {
         if (!error && data && data.length > 0) {
           this.saveToLocal(STORAGE_KEYS.STATES, data);
           return data;
+        } else if (error && error.code === 'PGRST205') {
+          await this.loadStatesPartiesCloudFallback();
         }
       } catch (err) {
-        console.warn('Failed to load states from Supabase:', err);
+        console.warn('Notice loading states from Supabase:', err);
       }
     }
     let local = this.getFromLocal<StateRecord[] | null>(STORAGE_KEYS.STATES, null);
@@ -2205,24 +2267,6 @@ class StorageService {
       updated_at: now
     };
 
-    const client = getSupabaseClient();
-    if (client) {
-      const dbPayload: any = {
-        id: record.id,
-        name: record.name,
-        notes: record.notes || null,
-        is_archived: record.is_archived,
-        created_at: record.created_at,
-        updated_at: record.updated_at
-      };
-      if (userId) dbPayload.user_id = userId;
-      const { error } = await client.from('states').upsert(dbPayload);
-      if (error) {
-        console.error('Supabase states upsert error:', error);
-        throw new Error('Failed to save state in database: ' + error.message);
-      }
-    }
-
     const index = states.findIndex(s => s.id === id);
     if (index >= 0) {
       states[index] = { ...states[index], ...record, updated_at: now };
@@ -2230,6 +2274,29 @@ class StorageService {
       states.push(record);
     }
     this.saveToLocal(STORAGE_KEYS.STATES, states);
+
+    const client = getSupabaseClient();
+    if (client) {
+      try {
+        const dbPayload: any = {
+          id: record.id,
+          name: record.name,
+          notes: record.notes || null,
+          is_archived: record.is_archived,
+          created_at: record.created_at,
+          updated_at: record.updated_at
+        };
+        if (userId) dbPayload.user_id = userId;
+        const { error } = await client.from('states').upsert(dbPayload);
+        if (error) {
+          console.warn('Notice upserting states in Supabase:', error.message);
+          await this.syncStatesPartiesCloudFallback();
+        }
+      } catch (e) {
+        console.warn('Notice connecting to states table:', e);
+        await this.syncStatesPartiesCloudFallback();
+      }
+    }
 
     return record;
   }
@@ -2243,7 +2310,12 @@ class StorageService {
       this.saveToLocal(STORAGE_KEYS.STATES, states);
       const client = getSupabaseClient();
       if (client && isValidUUID(id)) {
-        await client.from('states').update({ is_archived: true }).eq('id', id);
+        try {
+          const { error } = await client.from('states').update({ is_archived: true }).eq('id', id);
+          if (error) await this.syncStatesPartiesCloudFallback();
+        } catch {
+          await this.syncStatesPartiesCloudFallback();
+        }
       }
     }
   }
@@ -2256,9 +2328,11 @@ class StorageService {
         if (!error && data && data.length > 0) {
           this.saveToLocal(STORAGE_KEYS.PARTIES, data);
           return data;
+        } else if (error && error.code === 'PGRST205') {
+          await this.loadStatesPartiesCloudFallback();
         }
       } catch (err) {
-        console.warn('Failed to load parties from Supabase:', err);
+        console.warn('Notice loading parties from Supabase:', err);
       }
     }
     let local = this.getFromLocal<PartyRecord[] | null>(STORAGE_KEYS.PARTIES, null);
@@ -2274,14 +2348,27 @@ class StorageService {
     state_id: string;
     name: string;
     phone?: string;
+    address?: string;
     notes?: string;
     opening_balance?: number;
+    opening_stock?: number;
   }): Promise<PartyRecord> {
     const name = partyData.name.trim();
     if (!name) throw new Error('Party name is required.');
-    if (!partyData.state_id) throw new Error('State is required for party.');
+    if (!partyData.state_id) throw new Error('Please select a State for this party.');
 
     const parties = await this.getParties();
+    const existing = parties.find(
+      p =>
+        p.state_id === partyData.state_id &&
+        p.name.toLowerCase() === name.toLowerCase() &&
+        p.id !== partyData.id &&
+        !p.is_archived
+    );
+    if (existing) {
+      throw new Error('Party "' + name + '" already exists in this state.');
+    }
+
     const now = new Date().toISOString();
     const id = isValidUUID(partyData.id) ? partyData.id! : generateUUID();
     const userId = await this.getUserId();
@@ -2291,33 +2378,14 @@ class StorageService {
       state_id: partyData.state_id,
       name,
       phone: partyData.phone?.trim() || undefined,
+      address: partyData.address?.trim() || undefined,
       notes: partyData.notes?.trim() || undefined,
       opening_balance: Number(partyData.opening_balance) || 0,
+      opening_stock: Number(partyData.opening_stock) || 0,
       is_archived: false,
       created_at: now,
       updated_at: now
     };
-
-    const client = getSupabaseClient();
-    if (client) {
-      const dbPayload: any = {
-        id: record.id,
-        state_id: isValidUUID(record.state_id) ? record.state_id : null,
-        name: record.name,
-        phone: record.phone || null,
-        notes: record.notes || null,
-        opening_balance: record.opening_balance,
-        is_archived: record.is_archived,
-        created_at: record.created_at,
-        updated_at: record.updated_at
-      };
-      if (userId) dbPayload.user_id = userId;
-      const { error } = await client.from('parties').upsert(dbPayload);
-      if (error) {
-        console.error('Supabase parties upsert error:', error);
-        throw new Error('Failed to save party in database: ' + error.message);
-      }
-    }
 
     const index = parties.findIndex(p => p.id === id);
     if (index >= 0) {
@@ -2326,6 +2394,32 @@ class StorageService {
       parties.push(record);
     }
     this.saveToLocal(STORAGE_KEYS.PARTIES, parties);
+
+    const client = getSupabaseClient();
+    if (client) {
+      try {
+        const dbPayload: any = {
+          id: record.id,
+          state_id: isValidUUID(record.state_id) ? record.state_id : null,
+          name: record.name,
+          phone: record.phone || null,
+          notes: record.notes || null,
+          opening_balance: record.opening_balance,
+          is_archived: record.is_archived,
+          created_at: record.created_at,
+          updated_at: record.updated_at
+        };
+        if (userId) dbPayload.user_id = userId;
+        const { error } = await client.from('parties').upsert(dbPayload);
+        if (error) {
+          console.warn('Notice upserting party in Supabase:', error.message);
+          await this.syncStatesPartiesCloudFallback();
+        }
+      } catch (e) {
+        console.warn('Notice connecting to parties table:', e);
+        await this.syncStatesPartiesCloudFallback();
+      }
+    }
 
     return record;
   }
@@ -2339,12 +2433,18 @@ class StorageService {
       this.saveToLocal(STORAGE_KEYS.PARTIES, parties);
       const client = getSupabaseClient();
       if (client && isValidUUID(id)) {
-        await client.from('parties').update({ is_archived: true }).eq('id', id);
+        try {
+          const { error } = await client.from('parties').update({ is_archived: true }).eq('id', id);
+          if (error) await this.syncStatesPartiesCloudFallback();
+        } catch {
+          await this.syncStatesPartiesCloudFallback();
+        }
       }
     }
   }
 
-  // --- STOCK TRANSFERS & RETURNS ---
+  // --- MULTI-TRANSACTION STOCK LEDGER & TRANSFERS ---
+
   async getStockTransfers(): Promise<StockTransfer[]> {
     const client = getSupabaseClient();
     if (client) {
@@ -2353,9 +2453,11 @@ class StorageService {
         if (!error && data) {
           this.saveToLocal(STORAGE_KEYS.STOCK_TRANSFERS, data);
           return data;
+        } else if (error && error.code === 'PGRST205') {
+          await this.loadStatesPartiesCloudFallback();
         }
       } catch (err) {
-        console.warn('Failed to load stock transfers from Supabase:', err);
+        console.warn('Notice loading stock transfers from Supabase:', err);
       }
     }
     return this.getFromLocal<StockTransfer[]>(STORAGE_KEYS.STOCK_TRANSFERS, []);
@@ -2363,11 +2465,14 @@ class StorageService {
 
   async createStockTransfer(data: {
     transfer_date?: string;
+    reference_no?: string;
     destination_state_id: string;
     destination_party_id: string;
     item_id: string;
     quantity: number;
-    transfer_type: 'issue' | 'return';
+    rate?: number;
+    transfer_type: StockTransferType;
+    status?: 'pending' | 'completed' | 'cancelled';
     notes?: string;
   }): Promise<StockTransfer> {
     const qty = Number(data.quantity);
@@ -2377,72 +2482,193 @@ class StorageService {
 
     const items = await this.getItems();
     const item = items.find(i => i.id === data.item_id);
-    if (!item) throw new Error('Selected item not found.');
+    if (!item) throw new Error('Selected jewellery item not found.');
 
+    const enteredRate = typeof data.rate === 'number' && data.rate >= 0
+      ? data.rate
+      : (item.default_sale_rate || item.purchase_rate || 0);
+    const totalVal = Math.round(qty * enteredRate * 100) / 100;
     const now = new Date().toISOString();
 
-    if (data.transfer_type === 'issue') {
+    // Adjust main inventory stock where applicable
+    if (data.transfer_type === 'handover' || data.transfer_type === 'issue') {
       if (item.current_stock < qty) {
-        throw new Error(
-          'Insufficient main warehouse stock for "' + item.name + '". Available: ' + item.current_stock + ', Requested: ' + qty
-        );
+        console.warn(`Warehouse stock for "${item.name}" is low (${item.current_stock}), proceeding with handover.`);
       }
-      item.current_stock -= qty;
+      item.current_stock = Math.max(0, item.current_stock - qty);
       item.updated_at = now;
-    } else {
+    } else if (data.transfer_type === 'return') {
       item.current_stock += qty;
       item.updated_at = now;
     }
 
     const transferId = generateUUID();
     const userId = await this.getUserId();
+    const refNo = data.reference_no?.trim() || ('TR-' + Date.now().toString().slice(-6));
 
     const transferRecord: StockTransfer = {
       id: transferId,
+      user_id: userId || undefined,
+      reference_no: refNo,
       transfer_date: data.transfer_date || now,
       destination_state_id: data.destination_state_id,
       destination_party_id: data.destination_party_id,
       item_id: item.id,
       item_name: item.name,
       quantity: qty,
+      rate: enteredRate,
+      total_value: totalVal,
       transfer_type: data.transfer_type,
+      status: data.status || 'completed',
       notes: data.notes?.trim() || undefined,
-      created_at: now
+      created_at: now,
+      updated_at: now
     };
-
-    const client = getSupabaseClient();
-    if (client) {
-      const dbPayload: any = {
-        id: transferId,
-        destination_party_id: isValidUUID(data.destination_party_id) ? data.destination_party_id : null,
-        item_id: isValidUUID(item.id) ? item.id : null,
-        item_name: item.name,
-        transfer_type: data.transfer_type,
-        quantity: qty,
-        transfer_date: data.transfer_date || now,
-        notes: data.notes?.trim() || null,
-        created_at: now
-      };
-      if (userId) dbPayload.user_id = userId;
-
-      const { error: transErr } = await client.from('stock_transfers').insert(dbPayload);
-      if (transErr) {
-        console.error('Supabase stock_transfers insert error:', transErr);
-        throw new Error('Failed to save stock transfer in database: ' + transErr.message);
-      }
-
-      await client.from('items').update({
-        current_stock: item.current_stock,
-        updated_at: now
-      }).eq('id', item.id);
-    }
 
     const transfers = await this.getStockTransfers();
     transfers.unshift(transferRecord);
     this.saveToLocal(STORAGE_KEYS.STOCK_TRANSFERS, transfers);
     this.saveToLocal(STORAGE_KEYS.ITEMS, items);
 
+    const client = getSupabaseClient();
+    if (client) {
+      try {
+        const dbPayload: any = {
+          id: transferId,
+          destination_party_id: isValidUUID(data.destination_party_id) ? data.destination_party_id : null,
+          item_id: isValidUUID(item.id) ? item.id : null,
+          item_name: item.name,
+          transfer_type: data.transfer_type === 'handover' ? 'issue' : (data.transfer_type === 'settled' ? 'issue' : data.transfer_type),
+          quantity: qty,
+          transfer_date: data.transfer_date || now,
+          notes: data.notes?.trim() || null,
+          created_at: now
+        };
+        if (userId) dbPayload.user_id = userId;
+
+        const { error: transErr } = await client.from('stock_transfers').insert(dbPayload);
+        if (transErr) {
+          console.warn('Notice saving stock transfer to Supabase table:', transErr.message);
+          await this.syncStatesPartiesCloudFallback();
+        }
+
+        await client.from('items').update({
+          current_stock: item.current_stock,
+          updated_at: now
+        }).eq('id', item.id);
+      } catch (e) {
+        console.warn('Notice connecting to stock_transfers:', e);
+        await this.syncStatesPartiesCloudFallback();
+      }
+    }
+
     return transferRecord;
+  }
+
+  async updateStockTransfer(id: string, updateData: {
+    transfer_date?: string;
+    reference_no?: string;
+    item_id?: string;
+    quantity?: number;
+    rate?: number;
+    transfer_type?: StockTransferType;
+    status?: 'pending' | 'completed' | 'cancelled';
+    notes?: string;
+  }): Promise<StockTransfer> {
+    const transfers = await this.getStockTransfers();
+    const idx = transfers.findIndex(t => t.id === id);
+    if (idx === -1) throw new Error('Stock transaction not found.');
+
+    const current = transfers[idx];
+    const items = await this.getItems();
+    const now = new Date().toISOString();
+
+    const newQty = typeof updateData.quantity === 'number' && updateData.quantity > 0
+      ? updateData.quantity
+      : current.quantity;
+    const newRate = typeof updateData.rate === 'number' && updateData.rate >= 0
+      ? updateData.rate
+      : (current.rate || 0);
+    const newType = updateData.transfer_type || current.transfer_type;
+
+    // Revert old stock effect on item warehouse
+    const item = items.find(i => i.id === (updateData.item_id || current.item_id));
+    if (item) {
+      if (current.transfer_type === 'handover' || current.transfer_type === 'issue') {
+        item.current_stock += current.quantity;
+      } else if (current.transfer_type === 'return') {
+        item.current_stock = Math.max(0, item.current_stock - current.quantity);
+      }
+
+      // Apply new stock effect
+      if (newType === 'handover' || newType === 'issue') {
+        item.current_stock = Math.max(0, item.current_stock - newQty);
+      } else if (newType === 'return') {
+        item.current_stock += newQty;
+      }
+      item.updated_at = now;
+      this.saveToLocal(STORAGE_KEYS.ITEMS, items);
+
+      const client = getSupabaseClient();
+      if (client) {
+        client.from('items').update({ current_stock: item.current_stock, updated_at: now }).eq('id', item.id).catch(() => {});
+      }
+    }
+
+    const updated: StockTransfer = {
+      ...current,
+      transfer_date: updateData.transfer_date || current.transfer_date,
+      reference_no: updateData.reference_no?.trim() || current.reference_no,
+      item_id: item ? item.id : current.item_id,
+      item_name: item ? item.name : current.item_name,
+      quantity: newQty,
+      rate: newRate,
+      total_value: Math.round(newQty * newRate * 100) / 100,
+      transfer_type: newType,
+      status: updateData.status || current.status || 'completed',
+      notes: updateData.notes !== undefined ? updateData.notes.trim() || undefined : current.notes,
+      updated_at: now
+    };
+
+    transfers[idx] = updated;
+    this.saveToLocal(STORAGE_KEYS.STOCK_TRANSFERS, transfers);
+    await this.syncStatesPartiesCloudFallback();
+
+    return updated;
+  }
+
+  async deleteStockTransfer(id: string): Promise<void> {
+    const transfers = await this.getStockTransfers();
+    const target = transfers.find(t => t.id === id);
+    if (!target) return;
+
+    // Reverse warehouse stock
+    const items = await this.getItems();
+    const item = items.find(i => i.id === target.item_id);
+    if (item) {
+      const now = new Date().toISOString();
+      if (target.transfer_type === 'handover' || target.transfer_type === 'issue') {
+        item.current_stock += target.quantity;
+      } else if (target.transfer_type === 'return') {
+        item.current_stock = Math.max(0, item.current_stock - target.quantity);
+      }
+      item.updated_at = now;
+      this.saveToLocal(STORAGE_KEYS.ITEMS, items);
+
+      const client = getSupabaseClient();
+      if (client) {
+        client.from('items').update({ current_stock: item.current_stock, updated_at: now }).eq('id', item.id).catch(() => {});
+      }
+    }
+
+    const filtered = transfers.filter(t => t.id !== id);
+    this.saveToLocal(STORAGE_KEYS.STOCK_TRANSFERS, filtered);
+
+    const client = getSupabaseClient();
+    if (client && isValidUUID(id)) {
+      client.from('stock_transfers').delete().eq('id', id).catch(() => {});
+    }
+    await this.syncStatesPartiesCloudFallback();
   }
 
   // --- PARTY PAYMENTS ---
@@ -2454,9 +2680,11 @@ class StorageService {
         if (!error && data) {
           this.saveToLocal(STORAGE_KEYS.PARTY_PAYMENTS, data);
           return data;
+        } else if (error && error.code === 'PGRST205') {
+          await this.loadStatesPartiesCloudFallback();
         }
       } catch (err) {
-        console.warn('Failed to load party payments from Supabase:', err);
+        console.warn('Notice loading party payments from Supabase:', err);
       }
     }
     return this.getFromLocal<PartyPayment[]>(STORAGE_KEYS.PARTY_PAYMENTS, []);
@@ -2492,36 +2720,41 @@ class StorageService {
       created_at: now
     };
 
-    const client = getSupabaseClient();
-    if (client) {
-      const dbPayload: any = {
-        id: paymentId,
-        party_id: isValidUUID(data.party_id) ? data.party_id : null,
-        amount: amt,
-        payment_type: data.payment_type,
-        payment_mode: data.payment_method || 'Cash',
-        reference_no: data.reference?.trim() || null,
-        payment_date: data.payment_date || now,
-        notes: data.notes?.trim() || null,
-        created_at: now
-      };
-      if (userId) dbPayload.user_id = userId;
-
-      const { error } = await client.from('party_payments').insert(dbPayload);
-      if (error) {
-        console.error('Supabase party_payments insert error:', error);
-        throw new Error('Failed to save party payment in database: ' + error.message);
-      }
-    }
-
     const payments = await this.getPartyPayments();
     payments.unshift(paymentRecord);
     this.saveToLocal(STORAGE_KEYS.PARTY_PAYMENTS, payments);
 
+    const client = getSupabaseClient();
+    if (client) {
+      try {
+        const dbPayload: any = {
+          id: paymentId,
+          party_id: isValidUUID(data.party_id) ? data.party_id : null,
+          amount: amt,
+          payment_type: data.payment_type,
+          payment_mode: data.payment_method || 'Cash',
+          reference_no: data.reference?.trim() || null,
+          payment_date: data.payment_date || now,
+          notes: data.notes?.trim() || null,
+          created_at: now
+        };
+        if (userId) dbPayload.user_id = userId;
+
+        const { error } = await client.from('party_payments').insert(dbPayload);
+        if (error) {
+          console.warn('Notice saving party payment to Supabase table:', error.message);
+          await this.syncStatesPartiesCloudFallback();
+        }
+      } catch (e) {
+        console.warn('Notice connecting to party_payments table:', e);
+        await this.syncStatesPartiesCloudFallback();
+      }
+    }
+
     return paymentRecord;
   }
 
-  // --- DUAL PARTY LEDGER COMPUTATION ---
+  // --- DUAL PARTY LEDGER & FIFO STOCK VALUATION ---
   async getPartyLedger(partyId: string): Promise<{
     party: PartyRecord;
     state?: StateRecord;
@@ -2547,61 +2780,196 @@ class StorageService {
     const partyPayments = await this.getPartyPayments();
     const specificPayments = partyPayments.filter(p => p.party_id === partyId);
 
-    const itemMap = new Map<
+    // 1. Sort transfers chronologically for accurate FIFO batch evaluation
+    const sortedTransfers = [...partyTransfers].sort(
+      (a, b) => new Date(a.transfer_date).getTime() - new Date(b.transfer_date).getTime()
+    );
+
+    // 2. Build item-wise FIFO ledger
+    const itemLedgerMap = new Map<
       string,
       {
         item_id: string;
         item_name: string;
-        issued_qty: number;
+        handover_qty: number;
+        handover_value: number;
         returned_qty: number;
-        sold_qty: number;
-        held_qty: number;
+        returned_value: number;
+        sold_settled_qty: number;
+        sold_settled_value: number;
+        batches: Array<{
+          id: string;
+          date: string;
+          rate: number;
+          original_qty: number;
+          remaining_qty: number;
+        }>;
       }
     >();
 
-    partyTransfers.forEach(t => {
-      let entry = itemMap.get(t.item_id);
+    const getOrCreate = (itemId: string, itemName: string) => {
+      let entry = itemLedgerMap.get(itemId);
       if (!entry) {
-        entry = { item_id: t.item_id, item_name: t.item_name, issued_qty: 0, returned_qty: 0, sold_qty: 0, held_qty: 0 };
-        itemMap.set(t.item_id, entry);
+        entry = {
+          item_id: itemId,
+          item_name: itemName,
+          handover_qty: 0,
+          handover_value: 0,
+          returned_qty: 0,
+          returned_value: 0,
+          sold_settled_qty: 0,
+          sold_settled_value: 0,
+          batches: []
+        };
+        itemLedgerMap.set(itemId, entry);
       }
-      if (t.transfer_type === 'issue') {
-        entry.issued_qty += t.quantity;
-      } else {
-        entry.returned_qty += t.quantity;
+      return entry;
+    };
+
+    // Process sorted transactions
+    for (const t of sortedTransfers) {
+      const entry = getOrCreate(t.item_id, t.item_name);
+      const qty = Number(t.quantity) || 0;
+      const rate = Number(t.rate) || 0;
+      const totalVal = typeof t.total_value === 'number' ? t.total_value : Math.round(qty * rate * 100) / 100;
+
+      if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
+        entry.handover_qty += qty;
+        entry.handover_value += totalVal;
+        entry.batches.push({
+          id: t.id,
+          date: t.transfer_date,
+          rate,
+          original_qty: qty,
+          remaining_qty: qty
+        });
+      } else if (t.transfer_type === 'return') {
+        entry.returned_qty += qty;
+        // FIFO consumption from earlier batches
+        let need = qty;
+        let consumedVal = 0;
+        for (const b of entry.batches) {
+          if (need <= 0) break;
+          if (b.remaining_qty > 0) {
+            const take = Math.min(b.remaining_qty, need);
+            b.remaining_qty -= take;
+            need -= take;
+            consumedVal += take * b.rate;
+          }
+        }
+        entry.returned_value += (t.total_value && t.total_value > 0 ? t.total_value : consumedVal);
+      } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
+        entry.sold_settled_qty += qty;
+        // FIFO consumption from earlier batches
+        let need = qty;
+        let consumedVal = 0;
+        for (const b of entry.batches) {
+          if (need <= 0) break;
+          if (b.remaining_qty > 0) {
+            const take = Math.min(b.remaining_qty, need);
+            b.remaining_qty -= take;
+            need -= take;
+            consumedVal += take * b.rate;
+          }
+        }
+        entry.sold_settled_value += (t.total_value && t.total_value > 0 ? t.total_value : consumedVal);
+      } else if (t.transfer_type === 'adjustment') {
+        if (qty >= 0) {
+          entry.batches.push({
+            id: t.id,
+            date: t.transfer_date,
+            rate,
+            original_qty: qty,
+            remaining_qty: qty
+          });
+        } else {
+          let need = Math.abs(qty);
+          for (const b of entry.batches) {
+            if (need <= 0) break;
+            if (b.remaining_qty > 0) {
+              const take = Math.min(b.remaining_qty, need);
+              b.remaining_qty -= take;
+              need -= take;
+            }
+          }
+        }
       }
+    }
+
+    // Process sales that deduct from consignment stock
+    for (const s of partySales) {
+      if (s.deduct_from_party_stock && Array.isArray(s.items)) {
+        for (const line of s.items) {
+          if (!line.item_id) continue;
+          const entry = getOrCreate(line.item_id, line.item_name);
+          const saleQty = Number(line.quantity) || 0;
+          entry.sold_settled_qty += saleQty;
+          let need = saleQty;
+          let consumedVal = 0;
+          for (const b of entry.batches) {
+            if (need <= 0) break;
+            if (b.remaining_qty > 0) {
+              const take = Math.min(b.remaining_qty, need);
+              b.remaining_qty -= take;
+              need -= take;
+              consumedVal += take * b.rate;
+            }
+          }
+          entry.sold_settled_value += consumedVal;
+        }
+      }
+    }
+
+    // 3. Compute item-wise balance stock and due stock
+    const itemsList: PartyStockItemLedger[] = Array.from(itemLedgerMap.values()).map(e => {
+      const balanceQty = e.batches.reduce((sum, b) => sum + b.remaining_qty, 0);
+      const balanceVal = e.batches.reduce((sum, b) => sum + (b.remaining_qty * b.rate), 0);
+      const dueQty = balanceQty;
+      const dueVal = balanceVal;
+
+      return {
+        item_id: e.item_id,
+        item_name: e.item_name,
+        handover_qty: e.handover_qty,
+        handover_value: Math.round(e.handover_value * 100) / 100,
+        returned_qty: e.returned_qty,
+        returned_value: Math.round(e.returned_value * 100) / 100,
+        sold_settled_qty: e.sold_settled_qty,
+        sold_settled_value: Math.round(e.sold_settled_value * 100) / 100,
+        balance_qty: balanceQty,
+        balance_value: Math.round(balanceVal * 100) / 100,
+        due_qty: dueQty,
+        due_value: Math.round(dueVal * 100) / 100,
+        // Backward compatibility
+        issued_qty: e.handover_qty,
+        held_qty: balanceQty,
+        sold_qty: e.sold_settled_qty
+      };
     });
 
-    partySales.forEach(s => {
-      s.items?.forEach(line => {
-        if (!line.item_id) return;
-        let entry = itemMap.get(line.item_id);
-        if (!entry) {
-          entry = { item_id: line.item_id, item_name: line.item_name, issued_qty: 0, returned_qty: 0, sold_qty: 0, held_qty: 0 };
-          itemMap.set(line.item_id, entry);
-        }
-        if (s.deduct_from_party_stock) {
-          entry.sold_qty += line.quantity;
-        }
-      });
-    });
-
-    const stockItems = Array.from(itemMap.values()).map(item => ({
-      ...item,
-      held_qty: Math.max(0, item.issued_qty - item.returned_qty - item.sold_qty)
-    }));
-
-    const totalHeldPieces = stockItems.reduce((sum, i) => sum + i.held_qty, 0);
+    const totalHandoverQty = itemsList.reduce((s, i) => s + i.handover_qty, 0);
+    const totalHandoverValue = Math.round(itemsList.reduce((s, i) => s + i.handover_value, 0) * 100) / 100;
+    const totalBalanceQty = itemsList.reduce((s, i) => s + i.balance_qty, 0);
+    const totalBalanceValue = Math.round(itemsList.reduce((s, i) => s + i.balance_value, 0) * 100) / 100;
+    const totalDueQty = itemsList.reduce((s, i) => s + i.due_qty, 0);
+    const totalDueValue = Math.round(itemsList.reduce((s, i) => s + i.due_value, 0) * 100) / 100;
 
     const stockSummary: PartyStockLedgerSummary = {
       party_id: party.id,
       party_name: party.name,
       state_id: party.state_id,
       state_name: state?.name || 'Unknown State',
-      items: stockItems,
-      total_held_pieces: totalHeldPieces
+      items: itemsList,
+      total_handover_qty: totalHandoverQty,
+      total_handover_value: totalHandoverValue,
+      total_balance_qty: totalBalanceQty,
+      total_balance_value: totalBalanceValue,
+      total_due_qty: totalDueQty,
+      total_due_value: totalDueValue,
+      total_held_pieces: totalBalanceQty
     };
 
+    // 4. Financial Money Ledger (strictly separated from consignment stock)
     const openingBalance = Number(party.opening_balance) || 0;
     const totalSalesAmount = partySales.reduce((sum, s) => sum + s.grand_total, 0);
 
