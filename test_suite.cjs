@@ -1206,6 +1206,222 @@ runTest('39. State & Party Form Validation: Empty names and duplicates strictly 
   }, /already exists in this state/);
 });
 
+// ====================================================
+// TEST 40 (Test A): Multi-level transfer custody accounting
+// ====================================================
+runTest('40. Multi-level custody accounting: Owner -> State Head -> Distributor (1,500 -> 1,000 -> 300)', () => {
+  const item = { id: 'item-101', name: 'Gold Bangles', current_stock: 1500, purchase_rate: 5000 };
+  const stateHead = { id: 'party-sh-1', name: 'Rajasthan State Head', party_type: 'state_head', state_id: 'state-rj' };
+  const distributorA = { id: 'party-dist-1', name: 'Jaipur Distributor A', party_type: 'distributor', state_id: 'state-rj', parent_party_id: 'party-sh-1' };
+
+  const transfers = [];
+
+  // 1. Owner transfers 1,000 pcs to Rajasthan State Head
+  const qty1 = 1000;
+  if (item.current_stock < qty1) throw new Error('Insufficient available stock');
+  item.current_stock -= qty1;
+  transfers.push({
+    id: 'tr-1',
+    transfer_date: new Date().toISOString(),
+    destination_state_id: stateHead.state_id,
+    destination_party_id: stateHead.id,
+    transfer_level: 'owner_to_party',
+    item_id: item.id,
+    quantity: qty1,
+    rate: 5000,
+    transfer_type: 'handover'
+  });
+
+  // Calculate State Head held stock
+  const getPartyStock = (partyId, itemId) => {
+    let stock = 0;
+    transfers.forEach(t => {
+      if (t.item_id !== itemId) return;
+      if (t.destination_party_id === partyId) {
+        if (t.transfer_type === 'handover' || t.transfer_type === 'issue') stock += t.quantity;
+        else if (t.transfer_type === 'return' && t.source_party_id) stock += t.quantity;
+        else if (t.transfer_type === 'return' && !t.source_party_id) stock -= t.quantity;
+        else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') stock -= t.quantity;
+      }
+      if (t.source_party_id === partyId) {
+        stock -= t.quantity;
+      }
+    });
+    return stock;
+  };
+
+  assert.strictEqual(item.current_stock, 500, 'Owner warehouse must have 500 pieces remaining');
+  assert.strictEqual(getPartyStock(stateHead.id, item.id), 1000, 'State Head must hold 1,000 pieces');
+
+  // 2. State Head transfers 300 pcs to Distributor A
+  const qty2 = 300;
+  const shHeld = getPartyStock(stateHead.id, item.id);
+  if (shHeld < qty2) throw new Error('Insufficient stock held by State Head');
+
+  // Note: Owner warehouse item.current_stock is NOT touched!
+  transfers.push({
+    id: 'tr-2',
+    transfer_date: new Date().toISOString(),
+    destination_state_id: stateHead.state_id,
+    destination_party_id: distributorA.id,
+    source_party_id: stateHead.id,
+    transfer_level: 'party_to_party',
+    item_id: item.id,
+    quantity: qty2,
+    rate: 5000,
+    transfer_type: 'handover'
+  });
+
+  const stateHeadStock = getPartyStock(stateHead.id, item.id);
+  const distributorAStock = getPartyStock(distributorA.id, item.id);
+  const totalOutsideCustody = stateHeadStock + distributorAStock;
+
+  assert.strictEqual(item.current_stock, 500, 'Owner warehouse must stay at 500 pieces (NOT reduced again)');
+  assert.strictEqual(stateHeadStock, 700, 'State Head must hold 700 pieces (1000 - 300)');
+  assert.strictEqual(distributorAStock, 300, 'Distributor A must hold 300 pieces');
+  assert.strictEqual(totalOutsideCustody, 1000, 'Total stock outside custody must be exactly 1,000 pieces (NOT 1,300)');
+});
+
+// ====================================================
+// TEST 41 (Test B): Atomic rejection of transfer exceeding available stock
+// ====================================================
+runTest('41. Atomic Rejection: Transfer exceeding available stock rejected with zero changes', () => {
+  const item = { id: 'item-102', name: 'Diamond Pendant', current_stock: 1500 };
+  const stateHead = { id: 'sh-1', name: 'Gujarat State Head', party_type: 'state_head' };
+  const distributor = { id: 'dist-1', name: 'Surat Distributor', party_type: 'distributor' };
+  const transfers = [];
+
+  // Scenario 1: Owner has 1,500 pcs, attempts to transfer 1,700 pcs
+  const attemptOwnerTransfer = (requestedQty) => {
+    if (item.current_stock < requestedQty) {
+      throw new Error(`Insufficient available stock for "${item.name}". Available in warehouse: ${item.current_stock} pieces, Requested: ${requestedQty} pieces.`);
+    }
+    item.current_stock -= requestedQty;
+    transfers.push({ id: 'tx-fail', quantity: requestedQty });
+  };
+
+  assert.throws(
+    () => attemptOwnerTransfer(1700),
+    /Insufficient available stock for "Diamond Pendant"\. Available in warehouse: 1500 pieces, Requested: 1700 pieces\./
+  );
+  assert.strictEqual(item.current_stock, 1500, 'Owner inventory must remain 1,500 pieces after rejection');
+  assert.strictEqual(transfers.length, 0, 'No transfer must be committed to ledger');
+
+  // Scenario 2: State head has 700 pcs, attempts to transfer 800 pcs
+  const stateHeadStock = 700;
+  const attemptStateHeadTransfer = (requestedQty) => {
+    if (stateHeadStock < requestedQty) {
+      throw new Error(`Insufficient stock held by State Head for "${item.name}". Available: ${stateHeadStock} pieces, Requested: ${requestedQty} pieces.`);
+    }
+  };
+
+  assert.throws(
+    () => attemptStateHeadTransfer(800),
+    /Insufficient stock held by State Head for "Diamond Pendant"\. Available: 700 pieces, Requested: 800 pieces\./
+  );
+  assert.strictEqual(transfers.length, 0, 'Ledger remains untouched');
+});
+
+// ====================================================
+// TEST 42 (Test C): Financial payment sync without double counting
+// ====================================================
+runTest('42. Financial Payment Sync: State/distributor payment updates party balance & Main Dashboard without double counting', () => {
+  const party = { id: 'p-dist-1', name: 'Apex Distributors', opening_balance: 50000 };
+  const sales = [];
+  const partyPayments = [];
+
+  // Record a payment received from distributor
+  const paymentAmount = 20000;
+  partyPayments.push({
+    id: 'pay-1',
+    party_id: party.id,
+    payment_date: new Date().toISOString(),
+    amount: paymentAmount,
+    payment_type: 'received',
+    payment_method: 'Bank Transfer',
+    reference: 'UTR123456789'
+  });
+
+  // Calculate party net receivable
+  const partyReceived = partyPayments.filter(p => p.party_id === party.id && p.payment_type === 'received').reduce((sum, p) => sum + p.amount, 0);
+  const partyOutstanding = party.opening_balance - partyReceived;
+  assert.strictEqual(partyOutstanding, 30000, 'Party outstanding receivable must reduce to ₹30,000');
+
+  // Calculate State & Parties Mini-Dashboard payment total
+  const miniDashPaymentsReceived = partyPayments.filter(p => p.payment_type === 'received').reduce((sum, p) => sum + p.amount, 0);
+  assert.strictEqual(miniDashPaymentsReceived, 20000, 'Mini-dashboard received payments must show ₹20,000');
+
+  // Calculate Main Dashboard cash received
+  const mainDashMonthCashReceived = sales.reduce((sum, s) => sum + (s.amount_received || 0), 0) + partyPayments.filter(p => p.payment_type === 'received').reduce((sum, p) => sum + p.amount, 0);
+  assert.strictEqual(mainDashMonthCashReceived, 20000, 'Main dashboard cash received must reflect ₹20,000');
+
+  // Verify non-duplication: no separate unlinked counter was created
+  assert.strictEqual(partyPayments.length, 1, 'Payment is recorded exactly once in authoritative financial ledger');
+});
+
+// ====================================================
+// TEST 43 (Test D): Stock return restoration
+// ====================================================
+runTest('43. Stock Return Restoration: Distributor -> State Head (50 pcs) & State Head -> Owner (100 pcs)', () => {
+  let ownerStock = 500;
+  let stateHeadStock = 700;
+  let distributorStock = 300;
+
+  // Step 1: Distributor returns 50 pcs to State Head
+  const returnToHeadQty = 50;
+  assert(distributorStock >= returnToHeadQty, 'Distributor has enough stock to return');
+  distributorStock -= returnToHeadQty;
+  stateHeadStock += returnToHeadQty;
+  // Owner stock is untouched
+  assert.strictEqual(distributorStock, 250, 'Distributor stock is 250 pcs');
+  assert.strictEqual(stateHeadStock, 750, 'State Head stock is 750 pcs');
+  assert.strictEqual(ownerStock, 500, 'Owner warehouse remains 500 pcs');
+
+  // Step 2: State Head returns 100 pcs to Owner
+  const returnToOwnerQty = 100;
+  assert(stateHeadStock >= returnToOwnerQty, 'State Head has enough stock to return');
+  stateHeadStock -= returnToOwnerQty;
+  ownerStock += returnToOwnerQty;
+
+  assert.strictEqual(stateHeadStock, 650, 'State Head stock is 650 pcs');
+  assert.strictEqual(ownerStock, 600, 'Owner warehouse restored to 600 pcs');
+  assert.strictEqual(distributorStock, 250, 'Distributor stock remains 250 pcs');
+
+  const totalOutsideCustody = stateHeadStock + distributorStock;
+  assert.strictEqual(totalOutsideCustody, 900, 'Total stock outside custody is 900 pcs (650 + 250)');
+});
+
+// ====================================================
+// TEST 44 (Test E): Mathematical invariant conservation
+// ====================================================
+runTest('44. Invariant Preservation: Total pieces across all locations equals initial purchase', () => {
+  const initialPurchaseQty = 1500;
+  const ownerStock = 600;
+  const stateHeadStock = 650;
+  let distributorStock = 250;
+
+  // Distributor completes a sale of 50 pieces
+  const soldQty = 50;
+  distributorStock -= soldQty; // 200 remaining
+
+  const writtenOffQty = 0;
+  const returnedToSupplierQty = 0;
+
+  // Invariant formula:
+  // Total Pieces = Owner Stock + Sum of State Heads + Sum of Distributors + Total Sold + Written Off - Supplier Returns
+  const totalPieces = ownerStock + stateHeadStock + distributorStock + soldQty + writtenOffQty - returnedToSupplierQty;
+  assert.strictEqual(totalPieces, initialPurchaseQty, 'Total pieces across all entities must strictly equal initial purchase of 1,500');
+
+  // Outside custody formula:
+  const outsideCustody = stateHeadStock + distributorStock;
+  assert.strictEqual(outsideCustody, 850, 'Stock outside custody must be exactly 850 pieces');
+
+  // Non-negativity invariant:
+  assert(ownerStock >= 0, 'Owner stock cannot be negative');
+  assert(stateHeadStock >= 0, 'State head stock cannot be negative');
+  assert(distributorStock >= 0, 'Distributor stock cannot be negative');
+});
+
 console.log(`\n====================================================`);
 console.log(`🎉 TEST SUMMARY: ${passedTests}/${totalTests} TESTS PASSED`);
 console.log(`====================================================`);

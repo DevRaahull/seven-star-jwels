@@ -8,7 +8,11 @@ import {
   Plus,
   Receipt,
   FileBarChart,
-  CheckCircle2
+  CheckCircle2,
+  Wallet,
+  Layers,
+  ShieldCheck,
+  ChevronRight
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext';
 import { formatCurrency, formatDate } from '../../lib/formatters';
@@ -157,6 +161,71 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span className="text-[11px] text-[#AAB4C5] mt-0.5 block">
             Net operating profit for this month
           </span>
+        </div>
+      </div>
+
+      {/* Authoritative Financial Synchronization Bar: Cash Inflow & Collections */}
+      <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 shadow-sm hover:border-[#2A3B5E] transition">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#1E2B45]/70">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <Wallet size={16} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-[#F5F3EE]">Cash Realization & Collections</span>
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-medium text-emerald-400">
+                  <ShieldCheck size={11} />
+                  Authoritative Ledger Synced
+                </span>
+              </div>
+              <p className="text-[11px] text-[#AAB4C5] mt-0.5">
+                Payments collected from wholesale parties, state heads & direct customer sales.
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setActiveTab('states_parties')}
+            className="flex items-center gap-1 text-xs text-[#D6B36A] hover:underline font-medium self-start sm:self-auto"
+          >
+            <span>States & Parties Ledger</span>
+            <ChevronRight size={13} />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 text-xs">
+          <div className="p-2.5 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
+            <span className="text-[#7A8699] text-[11px]">This Month&apos;s Inflow:</span>
+            <p className="font-bold text-emerald-400 font-mono text-base mt-0.5">
+              {formatCurrency(stats.month_cash_received || 0)}
+            </p>
+            <span className="text-[10px] text-[#7A8699]">Sales + party receipts</span>
+          </div>
+
+          <div className="p-2.5 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
+            <span className="text-[#7A8699] text-[11px]">Total Cash Collected:</span>
+            <p className="font-bold text-[#F5F3EE] font-mono text-base mt-0.5">
+              {formatCurrency(stats.total_cash_received || 0)}
+            </p>
+            <span className="text-[10px] text-[#7A8699]">All-time verified inflows</span>
+          </div>
+
+          <div className="p-2.5 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
+            <span className="text-[#7A8699] text-[11px]">Party / State Receipts:</span>
+            <p className="font-bold text-[#D6B36A] font-mono text-base mt-0.5">
+              {formatCurrency(stats.party_payments_received_total || 0)}
+            </p>
+            <span className="text-[10px] text-[#7A8699]">Synced from States & Parties</span>
+          </div>
+
+          <div className="p-2.5 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
+            <span className="text-[#7A8699] text-[11px]">Party Receivables:</span>
+            <p className="font-bold text-amber-400 font-mono text-base mt-0.5">
+              {formatCurrency(stats.party_receivables_total || 0)}
+            </p>
+            <span className="text-[10px] text-[#7A8699]">Outstanding unsettled balances</span>
+          </div>
         </div>
       </div>
 

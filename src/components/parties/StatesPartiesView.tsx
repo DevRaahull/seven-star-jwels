@@ -26,11 +26,20 @@ import {
   Clock,
   Building2,
   RotateCcw,
-  Check
+  Check,
+  LayoutDashboard,
+  GitBranch,
+  Wallet,
+  TrendingUp,
+  Boxes,
+  ShieldCheck,
+  Filter,
+  SlidersHorizontal,
+  Receipt
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext';
 import { formatCurrency, formatDate } from '../../lib/formatters';
-import { StateRecord, PartyRecord, StockTransfer, PartyPayment, StockTransferType } from '../../types';
+import { StateRecord, PartyRecord, PartyRole, StockTransfer, PartyPayment, StockTransferType, StockTransferLevel, DistributionMiniDashboardStats } from '../../types';
 
 export const StatesPartiesView: React.FC = () => {
   const {
@@ -40,6 +49,7 @@ export const StatesPartiesView: React.FC = () => {
     stockTransfers,
     partyPayments,
     sales,
+    expenses,
     saveState,
     archiveState,
     saveParty,
@@ -55,14 +65,22 @@ export const StatesPartiesView: React.FC = () => {
   const activeParties = useMemo(() => parties.filter(p => !p.is_archived), [parties]);
 
   // Main UI Mode & Navigation
-  // 'states' | 'parties' | 'state_detail' | 'party_detail'
-  const [activeViewTab, setActiveViewTab] = useState<'states' | 'parties'>('states');
+  // 'dashboard' | 'hierarchy' | 'states' | 'parties'
+  const [activeViewTab, setActiveViewTab] = useState<'dashboard' | 'hierarchy' | 'states' | 'parties'>('dashboard');
   const [selectedStateId, setSelectedStateId] = useState<string | null>(null);
   const [selectedPartyId, setSelectedPartyId] = useState<string | null>(null);
 
   // Filters & Search
   const [selectedStateFilter, setSelectedStateFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Mini-Dashboard Filters
+  const [dashStateFilter, setDashStateFilter] = useState<string>('all');
+  const [dashPartyFilter, setDashPartyFilter] = useState<string>('all');
+  const [dashItemFilter, setDashItemFilter] = useState<string>('all');
+  const [dashMonth, setDashMonth] = useState<string>('');
+  const [dashStartDate, setDashStartDate] = useState<string>('');
+  const [dashEndDate, setDashEndDate] = useState<string>('');
 
   // Modals state
   const [isStateModalOpen, setIsStateModalOpen] = useState(false);
@@ -83,6 +101,8 @@ export const StatesPartiesView: React.FC = () => {
   // Party Form fields
   const [partyStateId, setPartyStateId] = useState('');
   const [partyName, setPartyName] = useState('');
+  const [partyRole, setPartyRole] = useState<PartyRole>('state_head');
+  const [parentPartyId, setParentPartyId] = useState<string>('');
   const [partyPhone, setPartyPhone] = useState('');
   const [partyAddress, setPartyAddress] = useState('');
   const [partyNotes, setPartyNotes] = useState('');
@@ -92,6 +112,9 @@ export const StatesPartiesView: React.FC = () => {
   // Stock Transaction Form fields
   const [txDate, setTxDate] = useState(new Date().toISOString().split('T')[0]);
   const [txRefNo, setTxRefNo] = useState('');
+  const [txDirection, setTxDirection] = useState<'owner_to_state_head' | 'state_head_to_distributor' | 'distributor_to_state_head' | 'state_head_to_owner' | 'direct_party'>('owner_to_state_head');
+  const [txSourcePartyId, setTxSourcePartyId] = useState<string>('');
+  const [txDestPartyId, setTxDestPartyId] = useState<string>('');
   const [txItemId, setTxItemId] = useState('');
   const [txQty, setTxQty] = useState('');
   const [txRate, setTxRate] = useState('');
@@ -143,23 +166,30 @@ export const StatesPartiesView: React.FC = () => {
     }>();
 
     activeParties.forEach(party => {
-      const pTransfers = stockTransfers.filter(t => t.destination_party_id === party.id);
-      const pSales = sales.filter(s => s.party_id === party.id && s.status === 'completed');
-
       let issued = 0;
       let returned = 0;
       let soldFromHeld = 0;
 
-      pTransfers.forEach(t => {
-        if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
-          issued += t.quantity;
-        } else if (t.transfer_type === 'return') {
+      stockTransfers.forEach(t => {
+        if (t.status === 'cancelled') return;
+        if (t.destination_party_id === party.id) {
+          if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
+            issued += t.quantity;
+          } else if (t.transfer_type === 'return' && t.source_party_id) {
+            // Downstream return back to this state head
+            issued += t.quantity;
+          } else if (t.transfer_type === 'return' && !t.source_party_id) {
+            returned += t.quantity;
+          } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
+            soldFromHeld += t.quantity;
+          }
+        }
+        if (t.source_party_id === party.id) {
           returned += t.quantity;
-        } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
-          soldFromHeld += t.quantity;
         }
       });
 
+      const pSales = sales.filter(s => s.party_id === party.id && s.status === 'completed');
       pSales.forEach(s => {
         if (s.deduct_from_party_stock) {
           s.items?.forEach(i => {
@@ -195,6 +225,137 @@ export const StatesPartiesView: React.FC = () => {
 
     return map;
   }, [activeParties, stockTransfers, sales, partyPayments]);
+
+  // Mini-Dashboard Real-time Aggregated Metrics
+  const miniDashboardStats = useMemo(() => {
+    const activeItems = items.filter(i => !i.is_archived && (dashItemFilter === 'all' || i.id === dashItemFilter));
+    const activePartiesFiltered = activeParties.filter(p => {
+      if (dashStateFilter !== 'all' && p.state_id !== dashStateFilter) return false;
+      if (dashPartyFilter !== 'all' && p.id !== dashPartyFilter) return false;
+      return true;
+    });
+
+    // 1 & 2. Owner physical available stock
+    const ownerUnits = activeItems.reduce((sum, i) => sum + i.current_stock, 0);
+    const ownerValue = activeItems.reduce((sum, i) => sum + (i.current_stock * (i.purchase_rate || i.default_sale_rate || 0)), 0);
+
+    // Filter transfers by date/item/state/party if specified
+    const filteredTransfers = stockTransfers.filter(t => {
+      if (t.status === 'cancelled') return false;
+      if (dashItemFilter !== 'all' && t.item_id !== dashItemFilter) return false;
+      if (dashStateFilter !== 'all' && t.destination_state_id !== dashStateFilter) return false;
+      if (dashPartyFilter !== 'all' && t.destination_party_id !== dashPartyFilter && t.source_party_id !== dashPartyFilter) return false;
+      if (dashStartDate && new Date(t.transfer_date) < new Date(dashStartDate + 'T00:00:00')) return false;
+      if (dashEndDate && new Date(t.transfer_date) > new Date(dashEndDate + 'T23:59:59')) return false;
+      if (dashMonth && !t.transfer_date.startsWith(dashMonth)) return false;
+      return true;
+    });
+
+    // 3. Handed over to state heads
+    let totalHandedOverToStateHeads = 0;
+    filteredTransfers.forEach(t => {
+      if ((t.transfer_type === 'handover' || t.transfer_type === 'issue') && (!t.source_party_id || t.transfer_level === 'owner_to_party')) {
+        const destParty = activeParties.find(p => p.id === t.destination_party_id);
+        if (!destParty || destParty.party_type === 'state_head' || !destParty.party_type) {
+          totalHandedOverToStateHeads += t.quantity;
+        }
+      }
+    });
+
+    // 4 & 5. Held stock by state heads and distributors
+    let stateHeadsHeldStock = 0;
+    let distributorsHeldStock = 0;
+
+    activePartiesFiltered.forEach(p => {
+      const sm = partySummaries.get(p.id);
+      const held = sm?.heldStock || 0;
+      if (p.party_type === 'distributor') {
+        distributorsHeldStock += held;
+      } else {
+        stateHeadsHeldStock += held;
+      }
+    });
+
+    const totalStockOutsideCustody = stateHeadsHeldStock + distributorsHeldStock;
+
+    // 6. Total payments actually received
+    const filteredPayments = partyPayments.filter(pay => {
+      if (pay.payment_type !== 'received') return false;
+      const party = activeParties.find(p => p.id === pay.party_id);
+      if (dashStateFilter !== 'all' && party?.state_id !== dashStateFilter) return false;
+      if (dashPartyFilter !== 'all' && pay.party_id !== dashPartyFilter) return false;
+      if (dashStartDate && new Date(pay.payment_date) < new Date(dashStartDate + 'T00:00:00')) return false;
+      if (dashEndDate && new Date(pay.payment_date) > new Date(dashEndDate + 'T23:59:59')) return false;
+      if (dashMonth && !pay.payment_date.startsWith(dashMonth)) return false;
+      return true;
+    });
+    const totalPaymentsReceived = filteredPayments.reduce((sum, p) => sum + p.amount, 0);
+
+    // 7. Outstanding financial receivables
+    let totalReceivables = 0;
+    activePartiesFiltered.forEach(p => {
+      const sm = partySummaries.get(p.id);
+      if (sm && sm.receivable > 0) {
+        totalReceivables += sm.receivable;
+      }
+    });
+
+    // 8. Total recorded distribution expenses
+    const filteredExpenses = expenses.filter(e => {
+      if (e.is_cancelled) return false;
+      if (dashStateFilter !== 'all' && e.state_id && e.state_id !== dashStateFilter) return false;
+      if (dashPartyFilter !== 'all' && e.party_id && e.party_id !== dashPartyFilter) return false;
+      if (dashStartDate && new Date(e.expense_date) < new Date(dashStartDate + 'T00:00:00')) return false;
+      if (dashEndDate && new Date(e.expense_date) > new Date(dashEndDate + 'T23:59:59')) return false;
+      if (dashMonth && !e.expense_date.startsWith(dashMonth)) return false;
+      if (dashStateFilter === 'all' && dashPartyFilter === 'all') {
+        return e.state_id || e.party_id || ['Transport', 'Packaging'].includes(e.category);
+      }
+      return true;
+    });
+    const totalDistributionExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
+
+    return {
+      owner_available_stock_units: ownerUnits,
+      owner_available_stock_value: Math.round(ownerValue * 100) / 100,
+      total_handed_over_to_state_heads: totalHandedOverToStateHeads,
+      current_stock_held_by_state_heads: stateHeadsHeldStock,
+      current_stock_held_by_distributors: distributorsHeldStock,
+      total_stock_outside_custody: totalStockOutsideCustody,
+      total_payments_received: Math.round(totalPaymentsReceived * 100) / 100,
+      outstanding_financial_receivables: Math.round(totalReceivables * 100) / 100,
+      total_distribution_expenses: Math.round(totalDistributionExpenses * 100) / 100
+    };
+  }, [items, activeParties, stockTransfers, partyPayments, expenses, partySummaries, dashStateFilter, dashPartyFilter, dashItemFilter, dashMonth, dashStartDate, dashEndDate]);
+
+  // Sender available stock in transfer modal
+  const senderAvailableStock = useMemo(() => {
+    if (!txItemId) return null;
+    const it = items.find(i => i.id === txItemId);
+    if (!it) return null;
+
+    if (txDirection === 'owner_to_state_head') {
+      return { label: 'Owner Warehouse Stock', qty: it.current_stock };
+    }
+    if (txDirection === 'state_head_to_distributor' || txDirection === 'state_head_to_owner') {
+      const shId = txSourcePartyId || selectedPartyId;
+      const sh = activeParties.find(p => p.id === shId);
+      const held = partySummaries.get(shId || '')?.heldStock || 0;
+      return { label: `${sh?.name || 'State Head'} Held Stock`, qty: held };
+    }
+    if (txDirection === 'distributor_to_state_head') {
+      const distId = txSourcePartyId || selectedPartyId;
+      const dist = activeParties.find(p => p.id === distId);
+      const held = partySummaries.get(distId || '')?.heldStock || 0;
+      return { label: `${dist?.name || 'Distributor'} Held Stock`, qty: held };
+    }
+    if (txType === 'return' || txType === 'settled') {
+      const p = activeParties.find(p => p.id === selectedPartyId);
+      const held = partySummaries.get(selectedPartyId || '')?.heldStock || 0;
+      return { label: `${p?.name || 'Party'} Held Stock`, qty: held };
+    }
+    return { label: 'Owner Warehouse Stock', qty: it.current_stock };
+  }, [txItemId, txDirection, txSourcePartyId, selectedPartyId, items, activeParties, partySummaries, txType]);
 
   // Compute state summaries
   const stateSummaries = useMemo(() => {
@@ -314,6 +475,8 @@ export const StatesPartiesView: React.FC = () => {
       const saved = await saveParty({
         state_id: partyStateId,
         name: partyName.trim(),
+        party_type: partyRole,
+        parent_party_id: partyRole === 'distributor' ? (parentPartyId || undefined) : undefined,
         phone: partyPhone.trim() || undefined,
         address: partyAddress.trim() || undefined,
         notes: partyNotes.trim() || undefined,
@@ -327,7 +490,7 @@ export const StatesPartiesView: React.FC = () => {
       setPartyOpeningBalance('0');
       setPartyOpeningStock('0');
       setIsPartyModalOpen(false);
-      setSuccessMessage(`Party "${saved.name}" registered successfully.`);
+      setSuccessMessage(`Party "${saved.name}" (${saved.party_type === 'state_head' ? 'State Head' : 'Distributor'}) registered successfully.`);
       setTimeout(() => setSuccessMessage(null), 3500);
     } catch (err: any) {
       setErrorMessage(err.message || 'Failed to save party.');
@@ -370,6 +533,28 @@ export const StatesPartiesView: React.FC = () => {
     }
   };
 
+  // Helper openers for hierarchy transfers
+  const openTransferModal = (params: {
+    direction: 'owner_to_state_head' | 'state_head_to_distributor' | 'distributor_to_state_head' | 'state_head_to_owner' | 'direct_party';
+    sourcePartyId?: string;
+    destPartyId?: string;
+    type?: StockTransferType;
+  }) => {
+    setEditingTransferId(null);
+    setTxDate(new Date().toISOString().split('T')[0]);
+    setTxRefNo('');
+    setTxItemId('');
+    setTxQty('');
+    setTxRate('');
+    setTxNotes('');
+    setTxDirection(params.direction);
+    setTxSourcePartyId(params.sourcePartyId || '');
+    setTxDestPartyId(params.destPartyId || '');
+    setTxType(params.type || (params.direction.includes('return') ? 'return' : 'handover'));
+    setTxStatus('completed');
+    setIsStockTxModalOpen(true);
+  };
+
   // 5. Stock Transaction Submit (Create / Edit)
   const handleStockTxSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -385,13 +570,47 @@ export const StatesPartiesView: React.FC = () => {
       setErrorMessage('Please select a jewellery item.');
       return;
     }
-    if (!selectedPartyId) {
-      setErrorMessage('No party selected.');
+
+    // Determine target party
+    let destId = txDestPartyId || selectedPartyId;
+    let srcId = txSourcePartyId || undefined;
+    let level: StockTransferLevel = 'owner_to_party';
+    let typeToUse: StockTransferType = txType;
+
+    if (txDirection === 'owner_to_state_head') {
+      level = 'owner_to_party';
+      typeToUse = 'handover';
+      srcId = undefined;
+    } else if (txDirection === 'state_head_to_distributor') {
+      level = 'party_to_party';
+      typeToUse = 'handover';
+      if (!srcId) {
+        setErrorMessage('Source State Head is required.');
+        return;
+      }
+    } else if (txDirection === 'distributor_to_state_head') {
+      level = 'party_to_party';
+      typeToUse = 'return';
+      if (!srcId) {
+        setErrorMessage('Returning Distributor is required.');
+        return;
+      }
+    } else if (txDirection === 'state_head_to_owner') {
+      level = 'party_to_owner';
+      typeToUse = 'return';
+      srcId = srcId || destId || undefined;
+    }
+
+    if (!destId) {
+      setErrorMessage('Target party is required.');
       return;
     }
 
-    const party = activeParties.find(p => p.id === selectedPartyId);
-    if (!party) return;
+    const party = activeParties.find(p => p.id === destId);
+    if (!party) {
+      setErrorMessage('Selected party not found.');
+      return;
+    }
 
     setIsSubmitting(true);
     try {
@@ -402,7 +621,7 @@ export const StatesPartiesView: React.FC = () => {
           item_id: txItemId,
           quantity: qty,
           rate: rate,
-          transfer_type: txType,
+          transfer_type: typeToUse,
           status: txStatus,
           notes: txNotes.trim() || undefined
         });
@@ -413,19 +632,21 @@ export const StatesPartiesView: React.FC = () => {
           reference_no: txRefNo.trim() || undefined,
           destination_state_id: party.state_id,
           destination_party_id: party.id,
+          source_party_id: srcId,
+          transfer_level: level,
           item_id: txItemId,
           quantity: qty,
           rate: rate,
-          transfer_type: txType,
+          transfer_type: typeToUse,
           status: txStatus,
           notes: txNotes.trim() || undefined
         });
         setSuccessMessage(
-          txType === 'handover' || txType === 'issue'
+          typeToUse === 'handover' || typeToUse === 'issue'
             ? `Handed over ${qty} pcs to ${party.name} (Valued at ₹${(qty * rate).toLocaleString('en-IN')}).`
-            : txType === 'return'
-            ? `Returned ${qty} pcs from ${party.name} to main warehouse.`
-            : `Recorded ${qty} pcs ${txType} for ${party.name}.`
+            : typeToUse === 'return'
+            ? `Returned ${qty} pcs successfully.`
+            : `Recorded ${qty} pcs ${typeToUse} for ${party.name}.`
         );
       }
 
@@ -435,7 +656,9 @@ export const StatesPartiesView: React.FC = () => {
       setTxRate('');
       setTxNotes('');
       setTxRefNo('');
-      await loadPartyLedger(selectedPartyId);
+      if (selectedPartyId) {
+        await loadPartyLedger(selectedPartyId);
+      }
       setTimeout(() => setSuccessMessage(null), 4000);
     } catch (err: any) {
       setErrorMessage(err.message || 'Stock transaction failed.');
@@ -597,6 +820,14 @@ export const StatesPartiesView: React.FC = () => {
         <div className="flex flex-wrap items-center gap-2">
           {!selectedPartyId && (
             <>
+              <button
+                onClick={() => openTransferModal({ direction: 'owner_to_state_head' })}
+                className="flex items-center gap-1.5 px-3 py-2 bg-[#16233B] hover:bg-[#1E2E4A] text-[#D6B36A] rounded-xl text-xs font-semibold border border-[#1E2B45] transition active:scale-95"
+              >
+                <ArrowRightLeft size={15} />
+                <span>Stock Movement</span>
+              </button>
+
               <button
                 onClick={() => {
                   setStateName('');
@@ -1204,13 +1435,43 @@ export const StatesPartiesView: React.FC = () => {
         /* MAIN LIST VIEWS: STATES OR ALL PARTIES */
         <div className="space-y-6">
           {/* Main View Tabs */}
-          <div className="flex items-center gap-2 border-b border-[#1E2B45]">
+          <div className="flex items-center gap-2 border-b border-[#1E2B45] overflow-x-auto pb-px">
+            <button
+              onClick={() => {
+                setActiveViewTab('dashboard');
+                setSelectedStateId(null);
+              }}
+              className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+                activeViewTab === 'dashboard' && !selectedStateId
+                  ? 'border-[#D6B36A] text-[#D6B36A]'
+                  : 'border-transparent text-[#8A95A8] hover:text-[#F5F3EE]'
+              }`}
+            >
+              <LayoutDashboard size={15} />
+              <span>Distribution Mini-Dashboard</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveViewTab('hierarchy');
+                setSelectedStateId(null);
+              }}
+              className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+                activeViewTab === 'hierarchy' && !selectedStateId
+                  ? 'border-[#D6B36A] text-[#D6B36A]'
+                  : 'border-transparent text-[#8A95A8] hover:text-[#F5F3EE]'
+              }`}
+            >
+              <GitBranch size={15} />
+              <span>State & Distributor Hierarchy</span>
+            </button>
+
             <button
               onClick={() => {
                 setActiveViewTab('states');
                 setSelectedStateId(null);
               }}
-              className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 ${
+              className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
                 activeViewTab === 'states' && !selectedStateId
                   ? 'border-[#D6B36A] text-[#D6B36A]'
                   : 'border-transparent text-[#8A95A8] hover:text-[#F5F3EE]'
@@ -1225,7 +1486,7 @@ export const StatesPartiesView: React.FC = () => {
                 setActiveViewTab('parties');
                 setSelectedStateId(null);
               }}
-              className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 ${
+              className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
                 activeViewTab === 'parties' && !selectedStateId
                   ? 'border-[#D6B36A] text-[#D6B36A]'
                   : 'border-transparent text-[#8A95A8] hover:text-[#F5F3EE]'
@@ -1237,7 +1498,7 @@ export const StatesPartiesView: React.FC = () => {
 
             {selectedStateId && (
               <button
-                className="px-4 py-2.5 text-xs font-semibold border-b-2 border-[#D6B36A] text-[#D6B36A] flex items-center gap-2"
+                className="px-4 py-2.5 text-xs font-semibold border-b-2 border-[#D6B36A] text-[#D6B36A] flex items-center gap-2 whitespace-nowrap"
               >
                 <Building2 size={15} />
                 <span>{activeStateRecord?.name} Parties ({filteredParties.length})</span>
@@ -1404,6 +1665,814 @@ export const StatesPartiesView: React.FC = () => {
                       className="mt-3 text-xs text-[#D6B36A] font-semibold underline"
                     >
                       + Create First Party for {activeStateRecord.name}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ========================================================================= */}
+          {/* VIEW: SEPARATE STATES & PARTIES MINI-DASHBOARD */}
+          {/* ========================================================================= */}
+          {activeViewTab === 'dashboard' && !selectedStateId && (
+            <div className="space-y-6">
+              {/* Filter Bar */}
+              <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-4 shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#D6B36A]">
+                    <SlidersHorizontal size={15} />
+                    <span>Distribution Operations Filters</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setDashStateFilter('all');
+                      setDashPartyFilter('all');
+                      setDashItemFilter('all');
+                      setDashMonth('');
+                      setDashStartDate('');
+                      setDashEndDate('');
+                    }}
+                    className="text-[11px] text-[#AAB4C5] hover:text-[#F5F3EE] flex items-center gap-1 underline transition"
+                  >
+                    <RotateCcw size={12} />
+                    <span>Reset Filters</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
+                  {/* State Filter */}
+                  <div>
+                    <label className="block text-[10px] text-[#7A8699] mb-1 uppercase font-semibold">State</label>
+                    <select
+                      value={dashStateFilter}
+                      onChange={e => {
+                        setDashStateFilter(e.target.value);
+                        if (e.target.value !== 'all' && dashPartyFilter !== 'all') {
+                          const p = activeParties.find(x => x.id === dashPartyFilter);
+                          if (p && p.state_id !== e.target.value) {
+                            setDashPartyFilter('all');
+                          }
+                        }
+                      }}
+                      className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-2.5 py-1.5 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                    >
+                      <option value="all">All States ({activeStates.length})</option>
+                      {activeStates.map(s => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Party Filter */}
+                  <div>
+                    <label className="block text-[10px] text-[#7A8699] mb-1 uppercase font-semibold">Party / Head</label>
+                    <select
+                      value={dashPartyFilter}
+                      onChange={e => setDashPartyFilter(e.target.value)}
+                      className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-2.5 py-1.5 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                    >
+                      <option value="all">All Parties ({activeParties.length})</option>
+                      {activeParties
+                        .filter(p => dashStateFilter === 'all' || p.state_id === dashStateFilter)
+                        .map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} {p.party_type === 'distributor' ? '(Distributor)' : '(State Head)'}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  {/* Item Filter */}
+                  <div>
+                    <label className="block text-[10px] text-[#7A8699] mb-1 uppercase font-semibold">Jewellery Item</label>
+                    <select
+                      value={dashItemFilter}
+                      onChange={e => setDashItemFilter(e.target.value)}
+                      className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-2.5 py-1.5 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                    >
+                      <option value="all">All Items ({items.filter(i => !i.is_archived).length})</option>
+                      {items.filter(i => !i.is_archived).map(it => (
+                        <option key={it.id} value={it.id}>
+                          {it.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Month Filter */}
+                  <div>
+                    <label className="block text-[10px] text-[#7A8699] mb-1 uppercase font-semibold">Month</label>
+                    <input
+                      type="month"
+                      value={dashMonth}
+                      onChange={e => setDashMonth(e.target.value)}
+                      className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-2.5 py-1.5 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                    />
+                  </div>
+
+                  {/* Start Date */}
+                  <div>
+                    <label className="block text-[10px] text-[#7A8699] mb-1 uppercase font-semibold">From Date</label>
+                    <input
+                      type="date"
+                      value={dashStartDate}
+                      onChange={e => setDashStartDate(e.target.value)}
+                      className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-2.5 py-1.5 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                    />
+                  </div>
+
+                  {/* End Date */}
+                  <div>
+                    <label className="block text-[10px] text-[#7A8699] mb-1 uppercase font-semibold">To Date</label>
+                    <input
+                      type="date"
+                      value={dashEndDate}
+                      onChange={e => setDashEndDate(e.target.value)}
+                      className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-2.5 py-1.5 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* 8-9 Mini-Dashboard Metric Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* 1. Owner Available Physical Stock */}
+                <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-4 shadow-sm hover:border-[#D6B36A]/40 transition space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[#AAB4C5] font-medium">Owner Physical Stock</span>
+                    <div className="p-2 rounded-xl bg-[#D6B36A]/10 text-[#D6B36A] border border-[#D6B36A]/20">
+                      <Boxes size={18} />
+                    </div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <p className="text-2xl font-bold font-mono text-[#F5F3EE]">
+                      {miniDashboardStats.owner_available_stock_units} <span className="text-sm font-normal text-[#AAB4C5]">pcs</span>
+                    </p>
+                    <p className="text-xs text-[#D6B36A] font-semibold">
+                      ₹{miniDashboardStats.owner_available_stock_value.toLocaleString('en-IN')}
+                    </p>
+                  </div>
+                  <div className="pt-2 border-t border-[#1E2B45]/60 flex items-center justify-between text-[11px] text-[#7A8699]">
+                    <span>In Warehouse Custody</span>
+                    <span className="text-emerald-400 font-medium">Available</span>
+                  </div>
+                </div>
+
+                {/* 2. Total Stock Handed Over to State Heads */}
+                <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-4 shadow-sm hover:border-blue-500/40 transition space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[#AAB4C5] font-medium">Handed Over to State Heads</span>
+                    <div className="p-2 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                      <TrendingUp size={18} />
+                    </div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <p className="text-2xl font-bold font-mono text-[#F5F3EE]">
+                      {miniDashboardStats.total_handed_over_to_state_heads} <span className="text-sm font-normal text-[#AAB4C5]">pcs</span>
+                    </p>
+                    <p className="text-xs text-[#AAB4C5]">
+                      Cumulative handovers from owner
+                    </p>
+                  </div>
+                  <div className="pt-2 border-t border-[#1E2B45]/60 flex items-center justify-between text-[11px] text-[#7A8699]">
+                    <span>Level 1 Distribution</span>
+                    <span className="text-blue-400 font-medium">Initial Flow</span>
+                  </div>
+                </div>
+
+                {/* 3. Current Stock Held by State Heads */}
+                <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-4 shadow-sm hover:border-cyan-500/40 transition space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[#AAB4C5] font-medium">Held by State Heads</span>
+                    <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                      <Building2 size={18} />
+                    </div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <p className="text-2xl font-bold font-mono text-[#F5F3EE]">
+                      {miniDashboardStats.current_stock_held_by_state_heads} <span className="text-sm font-normal text-[#AAB4C5]">pcs</span>
+                    </p>
+                    <p className="text-xs text-[#AAB4C5]">
+                      In state heads&apos; custody
+                    </p>
+                  </div>
+                  <div className="pt-2 border-t border-[#1E2B45]/60 flex items-center justify-between text-[11px] text-[#7A8699]">
+                    <span>Consignment In Hand</span>
+                    <span className="text-cyan-400 font-medium">Active</span>
+                  </div>
+                </div>
+
+                {/* 4. Current Stock Held by Distributors */}
+                <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-4 shadow-sm hover:border-purple-500/40 transition space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[#AAB4C5] font-medium">Held by Distributors</span>
+                    <div className="p-2 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                      <Users size={18} />
+                    </div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <p className="text-2xl font-bold font-mono text-[#F5F3EE]">
+                      {miniDashboardStats.current_stock_held_by_distributors} <span className="text-sm font-normal text-[#AAB4C5]">pcs</span>
+                    </p>
+                    <p className="text-xs text-[#AAB4C5]">
+                      Downstream seller channels
+                    </p>
+                  </div>
+                  <div className="pt-2 border-t border-[#1E2B45]/60 flex items-center justify-between text-[11px] text-[#7A8699]">
+                    <span>Level 2 Distribution</span>
+                    <span className="text-purple-400 font-medium">In Field</span>
+                  </div>
+                </div>
+
+                {/* 5. Total Stock Outside Owner Custody */}
+                <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-4 shadow-sm hover:border-amber-500/40 transition space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[#AAB4C5] font-medium">Total Outside Custody</span>
+                    <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                      <ArrowRightLeft size={18} />
+                    </div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <p className="text-2xl font-bold font-mono text-amber-400">
+                      {miniDashboardStats.total_stock_outside_custody} <span className="text-sm font-normal text-[#AAB4C5]">pcs</span>
+                    </p>
+                    <p className="text-[11px] text-[#7A8699]">
+                      Heads ({miniDashboardStats.current_stock_held_by_state_heads}) + Dist ({miniDashboardStats.current_stock_held_by_distributors})
+                    </p>
+                  </div>
+                  <div className="pt-2 border-t border-[#1E2B45]/60 flex items-center justify-between text-[11px]">
+                    <span className="text-[#7A8699]">Invariant Check</span>
+                    <span className="text-emerald-400 font-semibold flex items-center gap-0.5">
+                      <ShieldCheck size={12} />
+                      Verified
+                    </span>
+                  </div>
+                </div>
+
+                {/* 6. Total Payments Received */}
+                <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-4 shadow-sm hover:border-emerald-500/40 transition space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[#AAB4C5] font-medium">Payments Received</span>
+                    <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      <DollarSign size={18} />
+                    </div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <p className="text-2xl font-bold font-mono text-emerald-400">
+                      ₹{miniDashboardStats.total_payments_received.toLocaleString('en-IN')}
+                    </p>
+                    <p className="text-xs text-[#AAB4C5]">
+                      Collected from states & parties
+                    </p>
+                  </div>
+                  <div className="pt-2 border-t border-[#1E2B45]/60 flex items-center justify-between text-[11px] text-[#7A8699]">
+                    <span>Main Dashboard Sync</span>
+                    <span className="text-emerald-400 font-medium">Realized</span>
+                  </div>
+                </div>
+
+                {/* 7. Outstanding Financial Receivables */}
+                <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-4 shadow-sm hover:border-rose-500/40 transition space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[#AAB4C5] font-medium">Outstanding Receivables</span>
+                    <div className="p-2 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                      <Wallet size={18} />
+                    </div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <p className="text-2xl font-bold font-mono text-[#F5F3EE]">
+                      ₹{miniDashboardStats.outstanding_financial_receivables.toLocaleString('en-IN')}
+                    </p>
+                    <p className="text-xs text-[#AAB4C5]">
+                      Legitimate settled dues & invoices
+                    </p>
+                  </div>
+                  <div className="pt-2 border-t border-[#1E2B45]/60 flex items-center justify-between text-[11px] text-[#7A8699]">
+                    <span>Real Financial Debt</span>
+                    <span className="text-amber-400 font-medium">Pending Inflow</span>
+                  </div>
+                </div>
+
+                {/* 8. Total Distribution Expenses */}
+                <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-4 shadow-sm hover:border-pink-500/40 transition space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[#AAB4C5] font-medium">Recorded Expenses</span>
+                    <div className="p-2 rounded-xl bg-pink-500/10 text-pink-400 border border-pink-500/20">
+                      <Receipt size={18} />
+                    </div>
+                  </div>
+                  <div className="space-y-0.5">
+                    <p className="text-2xl font-bold font-mono text-[#F5F3EE]">
+                      ₹{miniDashboardStats.total_distribution_expenses.toLocaleString('en-IN')}
+                    </p>
+                    <p className="text-xs text-[#AAB4C5]">
+                      Transit, state ops & logistics
+                    </p>
+                  </div>
+                  <div className="pt-2 border-t border-[#1E2B45]/60 flex items-center justify-between text-[11px] text-[#7A8699]">
+                    <span>Distribution Cost</span>
+                    <span className="text-pink-400 font-medium">Logged</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* State-wise & Party-wise Breakdown Table */}
+              <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-5 shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-[#F5F3EE]">State & Party Distribution Summary</h3>
+                    <p className="text-xs text-[#AAB4C5]">
+                      Real-time breakdown of consignment stock and financial standing by distribution entity.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => openTransferModal({ direction: 'owner_to_state_head' })}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold transition shadow"
+                  >
+                    <Plus size={14} />
+                    <span>New Stock Movement</span>
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-[#0B1220] text-[#AAB4C5] uppercase text-[10px] tracking-wider border-b border-[#1E2B45]">
+                      <tr>
+                        <th className="py-2.5 px-3">Party Name</th>
+                        <th className="py-2.5 px-3">Role</th>
+                        <th className="py-2.5 px-3">State</th>
+                        <th className="py-2.5 px-3 text-right">Held Stock</th>
+                        <th className="py-2.5 px-3 text-right">Dues / Receivables</th>
+                        <th className="py-2.5 px-3 text-right">Payments Received</th>
+                        <th className="py-2.5 px-3 text-center">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1E2B45]/60">
+                      {activeParties
+                        .filter(p => {
+                          if (dashStateFilter !== 'all' && p.state_id !== dashStateFilter) return false;
+                          if (dashPartyFilter !== 'all' && p.id !== dashPartyFilter) return false;
+                          return true;
+                        })
+                        .map(p => {
+                          const state = activeStates.find(s => s.id === p.state_id);
+                          const sm = partySummaries.get(p.id) || { heldStock: 0, receivable: 0, payable: 0, netPosition: 0 };
+                          const pReceived = partyPayments
+                            .filter(pay => pay.party_id === p.id && pay.payment_type === 'received')
+                            .reduce((sum, pay) => sum + pay.amount, 0);
+
+                          return (
+                            <tr key={p.id} className="hover:bg-[#16233B]/50 transition">
+                              <td className="py-3 px-3 font-semibold text-[#F5F3EE]">
+                                <div>{p.name}</div>
+                                {p.phone && <div className="text-[10px] text-[#7A8699] font-mono">{p.phone}</div>}
+                              </td>
+                              <td className="py-3 px-3">
+                                {p.party_type === 'distributor' ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                                    Distributor
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#D6B36A]/10 text-[#D6B36A] border border-[#D6B36A]/20">
+                                    State Head
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-3 text-[#AAB4C5]">{state?.name || '—'}</td>
+                              <td className="py-3 px-3 text-right font-mono font-bold text-[#F5F3EE]">
+                                {sm.heldStock} <span className="text-[10px] font-normal text-[#7A8699]">pcs</span>
+                              </td>
+                              <td className="py-3 px-3 text-right font-mono font-bold">
+                                {sm.netPosition > 0 ? (
+                                  <span className="text-amber-400">₹{sm.netPosition.toLocaleString('en-IN')}</span>
+                                ) : sm.netPosition < 0 ? (
+                                  <span className="text-emerald-400">Adv ₹{Math.abs(sm.netPosition).toLocaleString('en-IN')}</span>
+                                ) : (
+                                  <span className="text-[#7A8699]">₹0</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-3 text-right font-mono text-emerald-400 font-semibold">
+                                ₹{pReceived.toLocaleString('en-IN')}
+                              </td>
+                              <td className="py-3 px-3 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    onClick={() => {
+                                      if (p.party_type === 'distributor') {
+                                        openTransferModal({
+                                          direction: 'state_head_to_distributor',
+                                          destPartyId: p.id,
+                                          sourcePartyId: p.parent_party_id || undefined
+                                        });
+                                      } else {
+                                        openTransferModal({
+                                          direction: 'owner_to_state_head',
+                                          destPartyId: p.id
+                                        });
+                                      }
+                                    }}
+                                    className="px-2 py-1 bg-[#16233B] hover:bg-[#1E2E4A] text-[#D6B36A] rounded-lg text-[11px] font-semibold transition border border-[#1E2B45]"
+                                    title="Transfer Stock"
+                                  >
+                                    + Transfer
+                                  </button>
+                                  <button
+                                    onClick={() => setSelectedPartyId(p.id)}
+                                    className="px-2 py-1 bg-[#D6B36A]/10 hover:bg-[#D6B36A]/20 text-[#D6B36A] rounded-lg text-[11px] font-semibold transition"
+                                  >
+                                    Ledger →
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      {activeParties.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="py-8 text-center text-[#7A8699]">
+                            No parties registered yet. Register your first state and party to start tracking distribution.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ========================================================================= */}
+          {/* VIEW: STATE & DISTRIBUTOR HIERARCHY TREE */}
+          {/* ========================================================================= */}
+          {activeViewTab === 'hierarchy' && !selectedStateId && (
+            <div className="space-y-6">
+              {/* Warehouse Root Card */}
+              <div className="bg-[#111B2E] border-2 border-[#D6B36A]/40 rounded-2xl p-5 shadow-lg relative overflow-hidden">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-[#D6B36A]/15 text-[#D6B36A] rounded-2xl border border-[#D6B36A]/30 shadow-inner">
+                      <Boxes size={26} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-bold text-[#F5F3EE]">Business Owner — Central Warehouse</h3>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-semibold">
+                          Authoritative Root Custody
+                        </span>
+                      </div>
+                      <p className="text-xs text-[#AAB4C5] mt-0.5">
+                        Physical inventory available for distribution across state heads and distributor networks.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => openTransferModal({ direction: 'owner_to_state_head' })}
+                      className="flex items-center gap-1.5 px-3.5 py-2 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-xl text-xs font-bold transition shadow active:scale-95"
+                    >
+                      <Plus size={15} />
+                      <span>Issue Stock to State Head</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 pt-4 border-t border-[#1E2B45] text-xs">
+                  <div className="p-2.5 bg-[#0B1220] rounded-xl text-center">
+                    <span className="text-[#7A8699] text-[10px] uppercase font-semibold">Warehouse Stock</span>
+                    <p className="text-base font-bold font-mono text-[#D6B36A] mt-0.5">
+                      {miniDashboardStats.owner_available_stock_units} pcs
+                    </p>
+                  </div>
+                  <div className="p-2.5 bg-[#0B1220] rounded-xl text-center">
+                    <span className="text-[#7A8699] text-[10px] uppercase font-semibold">Warehouse Value</span>
+                    <p className="text-base font-bold font-mono text-[#F5F3EE] mt-0.5">
+                      ₹{miniDashboardStats.owner_available_stock_value.toLocaleString('en-IN')}
+                    </p>
+                  </div>
+                  <div className="p-2.5 bg-[#0B1220] rounded-xl text-center">
+                    <span className="text-[#7A8699] text-[10px] uppercase font-semibold">Stock Outside Custody</span>
+                    <p className="text-base font-bold font-mono text-amber-400 mt-0.5">
+                      {miniDashboardStats.total_stock_outside_custody} pcs
+                    </p>
+                  </div>
+                  <div className="p-2.5 bg-[#0B1220] rounded-xl text-center">
+                    <span className="text-[#7A8699] text-[10px] uppercase font-semibold">Registered States</span>
+                    <p className="text-base font-bold font-mono text-cyan-400 mt-0.5">
+                      {activeStates.length} States
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Hierarchy State Branches */}
+              <div className="space-y-6">
+                {activeStates.map(state => {
+                  const stateParties = activeParties.filter(p => p.state_id === state.id);
+                  const stateHeads = stateParties.filter(p => p.party_type === 'state_head' || (!p.party_type && p.parent_party_id === undefined));
+                  const unassignedDistributors = stateParties.filter(p => p.party_type === 'distributor' && !p.parent_party_id);
+
+                  return (
+                    <div
+                      key={state.id}
+                      className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-5 shadow-sm space-y-4 transition hover:border-[#2A3B5E]"
+                    >
+                      {/* State Header */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#1E2B45]">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2.5 bg-[#D6B36A]/10 text-[#D6B36A] rounded-xl border border-[#D6B36A]/20">
+                            <MapPin size={20} />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-base font-bold text-[#F5F3EE]">{state.name}</h4>
+                              <span className="text-[10px] px-2 py-0.5 bg-[#16233B] text-[#AAB4C5] rounded-full border border-[#1E2B45]">
+                                {stateParties.length} Parties
+                              </span>
+                            </div>
+                            {state.notes && <p className="text-xs text-[#7A8699] mt-0.5">{state.notes}</p>}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              setPartyRole('state_head');
+                              setPartyStateId(state.id);
+                              setParentPartyId('');
+                              setPartyName('');
+                              setPartyPhone('');
+                              setPartyAddress('');
+                              setPartyNotes('');
+                              setPartyOpeningBalance('0');
+                              setPartyOpeningStock('0');
+                              setIsPartyModalOpen(true);
+                            }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#16233B] hover:bg-[#1E2E4A] text-[#D6B36A] rounded-xl text-xs font-semibold border border-[#1E2B45] transition"
+                          >
+                            <Plus size={14} />
+                            <span>Add State Head</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* State Heads & Distributors */}
+                      <div className="space-y-4 pl-2 sm:pl-6 border-l-2 border-[#1E2B45]/80 ml-2 sm:ml-4">
+                        {stateHeads.map(head => {
+                          const sm = partySummaries.get(head.id) || { heldStock: 0, receivable: 0, payable: 0, netPosition: 0 };
+                          const headDistributors = stateParties.filter(p => p.parent_party_id === head.id);
+
+                          return (
+                            <div key={head.id} className="space-y-3">
+                              {/* State Head Card */}
+                              <div className="bg-[#0B1220] border border-[#1E2B45] rounded-xl p-4 shadow-sm hover:border-[#D6B36A]/40 transition space-y-3">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                  <div className="flex items-center gap-2.5">
+                                    <span className="text-lg">👑</span>
+                                    <div>
+                                      <div className="flex items-center gap-2">
+                                        <h5 className="text-sm font-bold text-[#F5F3EE]">{head.name}</h5>
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#D6B36A]/10 text-[#D6B36A] border border-[#D6B36A]/20">
+                                          State Head
+                                        </span>
+                                      </div>
+                                      {head.phone && <p className="text-[11px] text-[#7A8699] font-mono">{head.phone}</p>}
+                                    </div>
+                                  </div>
+
+                                  {/* Head Quick Action Buttons */}
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <button
+                                      onClick={() => openTransferModal({ direction: 'owner_to_state_head', destPartyId: head.id })}
+                                      className="px-2.5 py-1 bg-[#16233B] hover:bg-[#1E2E4A] text-[#D6B36A] rounded-lg text-xs font-medium border border-[#1E2B45] transition"
+                                      title="Issue stock from warehouse to this state head"
+                                    >
+                                      + Issue (Owner → Head)
+                                    </button>
+
+                                    <button
+                                      onClick={() => openTransferModal({ direction: 'state_head_to_owner', sourcePartyId: head.id, destPartyId: head.id })}
+                                      className="px-2.5 py-1 bg-[#16233B] hover:bg-[#1E2E4A] text-cyan-400 rounded-lg text-xs font-medium border border-[#1E2B45] transition"
+                                      title="Return stock from this state head back to warehouse"
+                                    >
+                                      ↺ Return to Owner
+                                    </button>
+
+                                    <button
+                                      onClick={() => openTransferModal({ direction: 'state_head_to_distributor', sourcePartyId: head.id })}
+                                      className="px-2.5 py-1 bg-[#16233B] hover:bg-[#1E2E4A] text-purple-400 rounded-lg text-xs font-medium border border-[#1E2B45] transition"
+                                      title="Transfer stock to downstream distributor"
+                                    >
+                                      + To Distributor
+                                    </button>
+
+                                    <button
+                                      onClick={() => {
+                                        setPartyRole('distributor');
+                                        setPartyStateId(state.id);
+                                        setParentPartyId(head.id);
+                                        setPartyName('');
+                                        setPartyPhone('');
+                                        setPartyAddress('');
+                                        setPartyNotes('');
+                                        setPartyOpeningBalance('0');
+                                        setPartyOpeningStock('0');
+                                        setIsPartyModalOpen(true);
+                                      }}
+                                      className="px-2.5 py-1 bg-[#16233B] hover:bg-[#1E2E4A] text-emerald-400 rounded-lg text-xs font-medium border border-[#1E2B45] transition"
+                                      title="Add a downstream distributor under this state head"
+                                    >
+                                      + Add Distributor
+                                    </button>
+
+                                    <button
+                                      onClick={() => setSelectedPartyId(head.id)}
+                                      className="px-2.5 py-1 bg-[#D6B36A]/10 hover:bg-[#D6B36A]/20 text-[#D6B36A] rounded-lg text-xs font-bold transition"
+                                    >
+                                      Ledger →
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-[#1E2B45]/60 text-xs">
+                                  <div className="bg-[#111B2E] p-2 rounded-lg">
+                                    <span className="text-[10px] text-[#7A8699]">Held Stock</span>
+                                    <p className="font-bold text-[#F5F3EE] font-mono mt-0.5">{sm.heldStock} pcs</p>
+                                  </div>
+                                  <div className="bg-[#111B2E] p-2 rounded-lg">
+                                    <span className="text-[10px] text-[#7A8699]">Net Dues</span>
+                                    <p className={`font-bold font-mono mt-0.5 ${sm.netPosition > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                      {sm.netPosition > 0 ? `Owes ₹${sm.netPosition.toLocaleString('en-IN')}` : `₹0`}
+                                    </p>
+                                  </div>
+                                  <div className="bg-[#111B2E] p-2 rounded-lg">
+                                    <span className="text-[10px] text-[#7A8699]">Distributors</span>
+                                    <p className="font-bold text-purple-400 font-mono mt-0.5">{headDistributors.length} active</p>
+                                  </div>
+                                  <div className="bg-[#111B2E] p-2 rounded-lg">
+                                    <span className="text-[10px] text-[#7A8699]">Distributor Stock</span>
+                                    <p className="font-bold text-purple-300 font-mono mt-0.5">
+                                      {headDistributors.reduce((sum, d) => sum + (partySummaries.get(d.id)?.heldStock || 0), 0)} pcs
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Downstream Distributors under this State Head */}
+                              {headDistributors.length > 0 && (
+                                <div className="space-y-2 pl-4 sm:pl-8 border-l-2 border-purple-500/30 ml-3">
+                                  <span className="text-[10px] text-[#7A8699] uppercase font-bold tracking-wider">
+                                    Downstream Distributors ({headDistributors.length})
+                                  </span>
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                    {headDistributors.map(dist => {
+                                      const dsm = partySummaries.get(dist.id) || { heldStock: 0, receivable: 0, payable: 0, netPosition: 0 };
+                                      return (
+                                        <div
+                                          key={dist.id}
+                                          className="bg-[#0B1220]/70 border border-[#1E2B45] rounded-xl p-3 shadow-sm hover:border-purple-500/40 transition space-y-2.5"
+                                        >
+                                          <div className="flex items-start justify-between gap-2">
+                                            <div>
+                                              <div className="flex items-center gap-1.5">
+                                                <span className="text-sm">🤝</span>
+                                                <h6 className="text-xs font-bold text-[#F5F3EE]">{dist.name}</h6>
+                                              </div>
+                                              {dist.phone && <p className="text-[10px] text-[#7A8699] font-mono mt-0.5">{dist.phone}</p>}
+                                            </div>
+                                            <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                                              Distributor
+                                            </span>
+                                          </div>
+
+                                          <div className="flex items-center justify-between text-xs bg-[#111B2E] p-2 rounded-lg font-mono">
+                                            <div>
+                                              <span className="text-[10px] text-[#7A8699] block font-sans">Held Stock</span>
+                                              <span className="font-bold text-[#F5F3EE]">{dsm.heldStock} pcs</span>
+                                            </div>
+                                            <div className="text-right">
+                                              <span className="text-[10px] text-[#7A8699] block font-sans">Net Dues</span>
+                                              <span className={dsm.netPosition > 0 ? 'text-amber-400 font-bold' : 'text-emerald-400 font-bold'}>
+                                                {dsm.netPosition > 0 ? `₹${dsm.netPosition.toLocaleString('en-IN')}` : '₹0'}
+                                              </span>
+                                            </div>
+                                          </div>
+
+                                          <div className="flex items-center justify-end gap-1.5 pt-1">
+                                            <button
+                                              onClick={() => openTransferModal({
+                                                direction: 'distributor_to_state_head',
+                                                sourcePartyId: dist.id,
+                                                destPartyId: head.id
+                                              })}
+                                              className="px-2 py-1 bg-[#16233B] hover:bg-[#1E2E4A] text-cyan-400 rounded-lg text-[10px] font-medium border border-[#1E2B45] transition"
+                                              title="Return stock back to State Head"
+                                            >
+                                              ↺ Return to Head
+                                            </button>
+                                            <button
+                                              onClick={() => setSelectedPartyId(dist.id)}
+                                              className="px-2 py-1 bg-[#D6B36A]/10 hover:bg-[#D6B36A]/20 text-[#D6B36A] rounded-lg text-[10px] font-bold transition"
+                                            >
+                                              Ledger →
+                                            </button>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+
+                        {/* Unassigned Distributors if any */}
+                        {unassignedDistributors.length > 0 && (
+                          <div className="space-y-2 pt-2">
+                            <span className="text-[10px] text-[#7A8699] uppercase font-bold tracking-wider">
+                              Direct / Unassigned Distributors in {state.name}
+                            </span>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                              {unassignedDistributors.map(dist => {
+                                const dsm = partySummaries.get(dist.id) || { heldStock: 0, receivable: 0, payable: 0, netPosition: 0 };
+                                return (
+                                  <div
+                                    key={dist.id}
+                                    className="bg-[#0B1220]/70 border border-[#1E2B45] rounded-xl p-3 shadow-sm hover:border-[#D6B36A]/40 transition space-y-2.5"
+                                  >
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div>
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="text-sm">🤝</span>
+                                          <h6 className="text-xs font-bold text-[#F5F3EE]">{dist.name}</h6>
+                                        </div>
+                                        {dist.phone && <p className="text-[10px] text-[#7A8699] font-mono mt-0.5">{dist.phone}</p>}
+                                      </div>
+                                      <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                                        Distributor
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center justify-between text-xs bg-[#111B2E] p-2 rounded-lg font-mono">
+                                      <div>
+                                        <span className="text-[10px] text-[#7A8699] block font-sans">Held Stock</span>
+                                        <span className="font-bold text-[#F5F3EE]">{dsm.heldStock} pcs</span>
+                                      </div>
+                                      <div className="text-right">
+                                        <span className="text-[10px] text-[#7A8699] block font-sans">Net Dues</span>
+                                        <span className={dsm.netPosition > 0 ? 'text-amber-400 font-bold' : 'text-emerald-400 font-bold'}>
+                                          {dsm.netPosition > 0 ? `₹${dsm.netPosition.toLocaleString('en-IN')}` : '₹0'}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div className="flex justify-end pt-1">
+                                      <button
+                                        onClick={() => setSelectedPartyId(dist.id)}
+                                        className="px-2 py-1 bg-[#D6B36A]/10 hover:bg-[#D6B36A]/20 text-[#D6B36A] rounded-lg text-[10px] font-bold transition"
+                                      >
+                                        Ledger →
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {stateParties.length === 0 && (
+                          <div className="p-4 bg-[#0B1220] border border-dashed border-[#1E2B45] rounded-xl text-center text-xs text-[#7A8699]">
+                            No state heads or distributors registered in {state.name} yet.
+                            <button
+                              onClick={() => {
+                                setPartyRole('state_head');
+                                setPartyStateId(state.id);
+                                setParentPartyId('');
+                                setIsPartyModalOpen(true);
+                              }}
+                              className="block mx-auto mt-2 text-[#D6B36A] font-semibold hover:underline"
+                            >
+                              + Assign First State Head
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {activeStates.length === 0 && (
+                  <div className="text-center py-12 bg-[#111B2E] border border-dashed border-[#1E2B45] rounded-2xl text-[#AAB4C5]">
+                    <MapPin size={36} className="mx-auto mb-2 text-[#7A8699]" />
+                    <p className="text-sm font-medium">No states registered yet.</p>
+                    <button
+                      onClick={() => setIsStateModalOpen(true)}
+                      className="mt-3 text-xs text-[#D6B36A] font-semibold underline"
+                    >
+                      + Register First State
                     </button>
                   </div>
                 )}
@@ -1739,7 +2808,10 @@ export const StatesPartiesView: React.FC = () => {
                 <select
                   required
                   value={partyStateId}
-                  onChange={e => setPartyStateId(e.target.value)}
+                  onChange={e => {
+                    setPartyStateId(e.target.value);
+                    setParentPartyId('');
+                  }}
                   className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
                 >
                   <option value="">Select State</option>
@@ -1750,6 +2822,59 @@ export const StatesPartiesView: React.FC = () => {
                   ))}
                 </select>
               </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Hierarchy Role *</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPartyRole('state_head');
+                      setParentPartyId('');
+                    }}
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold border flex items-center justify-center gap-1.5 transition ${
+                      partyRole === 'state_head'
+                        ? 'bg-[#D6B36A]/20 border-[#D6B36A] text-[#D6B36A]'
+                        : 'bg-[#0B1220] border-[#1E2B45] text-[#AAB4C5] hover:text-[#F5F3EE]'
+                    }`}
+                  >
+                    <span>👑</span>
+                    <span>State Head</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPartyRole('distributor')}
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold border flex items-center justify-center gap-1.5 transition ${
+                      partyRole === 'distributor'
+                        ? 'bg-purple-500/20 border-purple-500 text-purple-300'
+                        : 'bg-[#0B1220] border-[#1E2B45] text-[#AAB4C5] hover:text-[#F5F3EE]'
+                    }`}
+                  >
+                    <span>🤝</span>
+                    <span>Distributor</span>
+                  </button>
+                </div>
+              </div>
+
+              {partyRole === 'distributor' && (
+                <div>
+                  <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Reporting State Head (Optional)</label>
+                  <select
+                    value={parentPartyId}
+                    onChange={e => setParentPartyId(e.target.value)}
+                    className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                  >
+                    <option value="">Direct / Unassigned</option>
+                    {activeParties
+                      .filter(p => (!partyStateId || p.state_id === partyStateId) && (p.party_type === 'state_head' || !p.party_type))
+                      .map(sh => (
+                        <option key={sh.id} value={sh.id}>
+                          {sh.name} ({activeStates.find(s => s.id === sh.state_id)?.name || 'State'})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Party Name *</label>
@@ -1863,6 +2988,148 @@ export const StatesPartiesView: React.FC = () => {
             </div>
 
             <form onSubmit={handleStockTxSubmit} className="space-y-4">
+              {/* Transfer Movement Direction */}
+              <div>
+                <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Transfer Direction / Movement Flow *</label>
+                <select
+                  value={txDirection}
+                  onChange={e => {
+                    const dir = e.target.value as any;
+                    setTxDirection(dir);
+                    if (dir === 'owner_to_state_head') {
+                      setTxType('handover');
+                    } else if (dir === 'state_head_to_distributor') {
+                      setTxType('handover');
+                    } else if (dir === 'distributor_to_state_head' || dir === 'state_head_to_owner') {
+                      setTxType('return');
+                    }
+                  }}
+                  className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                >
+                  <option value="owner_to_state_head">📦 Warehouse Owner → State Head (Handover)</option>
+                  <option value="state_head_to_distributor">🔄 State Head → Downstream Distributor (Transfer)</option>
+                  <option value="distributor_to_state_head">↺ Distributor → State Head (Channel Return)</option>
+                  <option value="state_head_to_owner">↺ State Head → Warehouse Owner (Warehouse Return)</option>
+                  <option value="direct_party">📋 Direct Party Stock Transaction</option>
+                </select>
+              </div>
+
+              {/* Source & Destination Parties based on Direction */}
+              {txDirection === 'state_head_to_distributor' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Source State Head *</label>
+                    <select
+                      required
+                      value={txSourcePartyId}
+                      onChange={e => setTxSourcePartyId(e.target.value)}
+                      className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                    >
+                      <option value="">Select State Head</option>
+                      {activeParties.filter(p => p.party_type === 'state_head' || !p.party_type).map(sh => (
+                        <option key={sh.id} value={sh.id}>
+                          {sh.name} ({activeStates.find(s => s.id === sh.state_id)?.name})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Target Distributor *</label>
+                    <select
+                      required
+                      value={txDestPartyId}
+                      onChange={e => setTxDestPartyId(e.target.value)}
+                      className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                    >
+                      <option value="">Select Distributor</option>
+                      {activeParties.filter(p => p.party_type === 'distributor').map(d => (
+                        <option key={d.id} value={d.id}>
+                          {d.name} ({activeStates.find(s => s.id === d.state_id)?.name})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {txDirection === 'distributor_to_state_head' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Returning Distributor *</label>
+                    <select
+                      required
+                      value={txSourcePartyId}
+                      onChange={e => setTxSourcePartyId(e.target.value)}
+                      className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                    >
+                      <option value="">Select Distributor</option>
+                      {activeParties.filter(p => p.party_type === 'distributor').map(d => (
+                        <option key={d.id} value={d.id}>
+                          {d.name} ({activeStates.find(s => s.id === d.state_id)?.name})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Receiving State Head *</label>
+                    <select
+                      required
+                      value={txDestPartyId}
+                      onChange={e => setTxDestPartyId(e.target.value)}
+                      className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                    >
+                      <option value="">Select State Head</option>
+                      {activeParties.filter(p => p.party_type === 'state_head' || !p.party_type).map(sh => (
+                        <option key={sh.id} value={sh.id}>
+                          {sh.name} ({activeStates.find(s => s.id === sh.state_id)?.name})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {txDirection === 'owner_to_state_head' && !selectedPartyId && (
+                <div>
+                  <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Destination State Head / Party *</label>
+                  <select
+                    required
+                    value={txDestPartyId}
+                    onChange={e => setTxDestPartyId(e.target.value)}
+                    className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                  >
+                    <option value="">Select Target Party</option>
+                    {activeParties.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({activeStates.find(s => s.id === p.state_id)?.name}) {p.party_type === 'distributor' ? '(Distributor)' : '(State Head)'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {txDirection === 'state_head_to_owner' && !selectedPartyId && (
+                <div>
+                  <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Returning State Head / Party *</label>
+                  <select
+                    required
+                    value={txSourcePartyId || txDestPartyId}
+                    onChange={e => {
+                      setTxSourcePartyId(e.target.value);
+                      setTxDestPartyId(e.target.value);
+                    }}
+                    className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
+                  >
+                    <option value="">Select Returning Party</option>
+                    {activeParties.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({activeStates.find(s => s.id === p.state_id)?.name})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-[#D6B36A] mb-1">Transaction Type *</label>
@@ -1872,7 +3139,7 @@ export const StatesPartiesView: React.FC = () => {
                     className="w-full bg-[#0B1220] border border-[#1E2B45] rounded-lg px-3 py-2 text-xs text-[#F5F3EE] focus:outline-none focus:border-[#D6B36A]"
                   >
                     <option value="handover">📦 Stock Handover (Issue to Party)</option>
-                    <option value="return">↺ Stock Return (Back to Warehouse)</option>
+                    <option value="return">↺ Stock Return (Back)</option>
                     <option value="settled">✓ Sold / Settled Stock</option>
                     <option value="adjustment">⚙ Stock Correction / Adjustment</option>
                   </select>
@@ -1931,6 +3198,29 @@ export const StatesPartiesView: React.FC = () => {
                   ))}
                 </select>
               </div>
+
+              {/* Sender Available Stock Verification Card */}
+              {senderAvailableStock && (
+                <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-[#0B1220] border border-[#1E2B45] text-xs">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck size={15} className="text-[#D6B36A]" />
+                    <span className="text-[#AAB4C5]">{senderAvailableStock.label}:</span>
+                  </div>
+                  <span className="font-bold font-mono text-[#D6B36A] text-sm">
+                    {senderAvailableStock.qty} pcs available
+                  </span>
+                </div>
+              )}
+
+              {/* Insufficient Stock Real-time Alert */}
+              {senderAvailableStock && parseFloat(txQty) > senderAvailableStock.qty && (
+                <div className="flex items-start gap-2.5 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs">
+                  <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                  <div>
+                    <strong>Insufficient Stock!</strong> Requested {txQty} pcs exceeds available {senderAvailableStock.qty} pcs with {senderAvailableStock.label}. Transaction will be rejected.
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>

@@ -129,17 +129,22 @@ export interface StateRecord {
   id: string;
   user_id?: string;
   name: string;
+  state_head_id?: string;
   notes?: string;
   is_archived?: boolean;
   created_at: string;
   updated_at: string;
 }
 
+export type PartyRole = 'state_head' | 'distributor' | 'partner';
+
 export interface PartyRecord {
   id: string;
   user_id?: string;
   state_id: string;
   name: string;
+  party_type?: PartyRole;
+  parent_party_id?: string; // If distributor, links to their state head
   phone?: string;
   address?: string;
   notes?: string;
@@ -151,6 +156,7 @@ export interface PartyRecord {
 }
 
 export type StockTransferType = 'handover' | 'issue' | 'return' | 'settled' | 'sale' | 'adjustment';
+export type StockTransferLevel = 'owner_to_party' | 'party_to_party' | 'party_to_owner';
 
 export interface StockTransfer {
   id: string;
@@ -159,6 +165,8 @@ export interface StockTransfer {
   transfer_date: string;
   destination_state_id: string;
   destination_party_id: string;
+  source_party_id?: string; // Present when transferring from State Head to Distributor
+  transfer_level?: StockTransferLevel;
   item_id: string;
   item_name: string;
   quantity: number;
@@ -252,6 +260,8 @@ export type ExpenseCategory =
 export interface Expense {
   id: string;
   user_id?: string;
+  state_id?: string;
+  party_id?: string;
   expense_date: string;
   title: string;
   category: ExpenseCategory | string;
@@ -311,6 +321,22 @@ export interface WholesaleDashboardStats {
   month_net_result: number;
   party_receivables_total?: number;
   party_payables_total?: number;
+  month_cash_received?: number;
+  total_cash_received?: number;
+  party_payments_received_total?: number;
+}
+
+// --- SEPARATE STATES & PARTIES MINI-DASHBOARD STATS ---
+export interface DistributionMiniDashboardStats {
+  owner_available_stock_units: number;
+  owner_available_stock_value: number;
+  total_handed_over_to_state_heads: number;
+  current_stock_held_by_state_heads: number;
+  current_stock_held_by_distributors: number;
+  total_stock_outside_custody: number; // State Heads + Distributors
+  total_payments_received: number;
+  outstanding_financial_receivables: number;
+  total_distribution_expenses: number;
 }
 
 // --- 6 MAIN NAVIGATION FEATURES ---

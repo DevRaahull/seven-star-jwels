@@ -11,7 +11,11 @@ import {
   StockMovementPeriod,
   StateRecord,
   PartyRecord,
+  PartyRole,
   StockTransfer,
+  StockTransferType,
+  StockTransferLevel,
+  DistributionMiniDashboardStats,
   PartyPayment,
   PartyStockLedgerSummary,
   PartyMoneyLedgerSummary,
@@ -50,12 +54,14 @@ interface AppDataContextType {
   updateSettings: (newSettings: Partial<BusinessSettings>) => Promise<BusinessSettings>;
   restoreBackup: (payload: any) => Promise<{ success: boolean; message: string }>;
   getStockMovementPeriod: (startDate: Date, endDate: Date) => Promise<StockMovementPeriod[]>;
-  saveState: (stateData: { id?: string; name: string; notes?: string }) => Promise<StateRecord>;
+  saveState: (stateData: { id?: string; name: string; state_head_id?: string; notes?: string }) => Promise<StateRecord>;
   archiveState: (id: string) => Promise<void>;
   saveParty: (partyData: {
     id?: string;
     state_id: string;
     name: string;
+    party_type?: PartyRole;
+    parent_party_id?: string;
     phone?: string;
     address?: string;
     notes?: string;
@@ -68,6 +74,8 @@ interface AppDataContextType {
     reference_no?: string;
     destination_state_id: string;
     destination_party_id: string;
+    source_party_id?: string;
+    transfer_level?: StockTransferLevel;
     item_id: string;
     quantity: number;
     rate?: number;
@@ -104,6 +112,8 @@ interface AppDataContextType {
     sales: Sale[];
     payments: PartyPayment[];
   }>;
+  getPartyHeldStock: (partyId: string, itemId?: string) => Promise<number>;
+  getDistributionDashboardStats: (filters?: any) => Promise<DistributionMiniDashboardStats>;
 }
 
 const AppDataContext = createContext<AppDataContextType | undefined>(undefined);
@@ -237,6 +247,34 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       else if (pos < 0) partyPayablesTotal += Math.abs(pos);
     });
 
+    // Cash received metrics
+    let monthSalesReceived = 0;
+    let totalSalesReceived = 0;
+    sales.forEach(s => {
+      if (s.status !== 'completed') return;
+      const sReceived = s.amount_received || 0;
+      totalSalesReceived += sReceived;
+      const sDate = new Date(s.sale_date);
+      if (sDate >= currentMonthStart && sDate <= now) {
+        monthSalesReceived += sReceived;
+      }
+    });
+
+    let monthPartyPaymentsReceived = 0;
+    let totalPartyPaymentsReceived = 0;
+    partyPayments.forEach(p => {
+      if (p.payment_type !== 'received') return;
+      const amt = p.amount || 0;
+      totalPartyPaymentsReceived += amt;
+      const pDate = new Date(p.payment_date);
+      if (pDate >= currentMonthStart && pDate <= now) {
+        monthPartyPaymentsReceived += amt;
+      }
+    });
+
+    const monthCashReceived = Math.round((monthSalesReceived + monthPartyPaymentsReceived) * 100) / 100;
+    const totalCashReceived = Math.round((totalSalesReceived + totalPartyPaymentsReceived) * 100) / 100;
+
     return {
       month_sales: monthSales,
       month_purchases: monthPurchases,
@@ -246,7 +284,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
       month_expenditure: monthExpenditure,
       month_net_result: monthNetResult,
       party_receivables_total: Math.round(partyReceivablesTotal * 100) / 100,
-      party_payables_total: Math.round(partyPayablesTotal * 100) / 100
+      party_payables_total: Math.round(partyPayablesTotal * 100) / 100,
+      month_cash_received: monthCashReceived,
+      total_cash_received: totalCashReceived,
+      party_payments_received_total: Math.round(totalPartyPaymentsReceived * 100) / 100
     };
   }, [sales, purchases, items, expenses, parties, partyPayments]);
 
@@ -501,6 +542,14 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return await storage.getPartyLedger(partyId);
   };
 
+  const getPartyHeldStock = async (partyId: string, itemId?: string) => {
+    return await storage.getPartyHeldStock(partyId, itemId);
+  };
+
+  const getDistributionDashboardStats = async (filters?: any) => {
+    return await storage.getDistributionDashboardStats(filters);
+  };
+
   return (
     <AppDataContext.Provider
       value={{
@@ -542,7 +591,9 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         updateStockTransfer,
         deleteStockTransfer,
         recordPartyPayment,
-        getPartyLedger
+        getPartyLedger,
+        getPartyHeldStock,
+        getDistributionDashboardStats
       }}
     >
       {children}

@@ -3,6 +3,7 @@ import {
   Item,
   Sale,
   SaleItem,
+  SalePayment,
   Purchase,
   PurchaseItem,
   Expense,
@@ -10,8 +11,13 @@ import {
   StockMovementPeriod,
   StateRecord,
   PartyRecord,
+  PartyRole,
   StockTransfer,
+  StockTransferType,
+  StockTransferLevel,
+  DistributionMiniDashboardStats,
   PartyPayment,
+  PartyStockItemLedger,
   PartyStockLedgerSummary,
   PartyMoneyLedgerSummary,
   PaymentStatus
@@ -2244,7 +2250,7 @@ class StorageService {
     return local;
   }
 
-  async saveState(stateData: { id?: string; name: string; notes?: string }): Promise<StateRecord> {
+  async saveState(stateData: { id?: string; name: string; state_head_id?: string; notes?: string }): Promise<StateRecord> {
     const name = stateData.name.trim();
     if (!name) throw new Error('State name is required.');
     const states = await this.getStates();
@@ -2261,6 +2267,7 @@ class StorageService {
     const record: StateRecord = {
       id,
       name,
+      state_head_id: stateData.state_head_id || undefined,
       notes: stateData.notes?.trim() || undefined,
       is_archived: false,
       created_at: now,
@@ -2347,6 +2354,8 @@ class StorageService {
     id?: string;
     state_id: string;
     name: string;
+    party_type?: PartyRole;
+    parent_party_id?: string;
     phone?: string;
     address?: string;
     notes?: string;
@@ -2373,10 +2382,16 @@ class StorageService {
     const id = isValidUUID(partyData.id) ? partyData.id! : generateUUID();
     const userId = await this.getUserId();
 
+    const stateParties = parties.filter(p => p.state_id === partyData.state_id && !p.is_archived && p.id !== id);
+    const hasHead = stateParties.some(p => p.party_type === 'state_head');
+    const resolvedRole: PartyRole = partyData.party_type || (hasHead ? 'distributor' : 'state_head');
+
     const record: PartyRecord = {
       id,
       state_id: partyData.state_id,
       name,
+      party_type: resolvedRole,
+      parent_party_id: partyData.parent_party_id || undefined,
       phone: partyData.phone?.trim() || undefined,
       address: partyData.address?.trim() || undefined,
       notes: partyData.notes?.trim() || undefined,
@@ -2394,6 +2409,16 @@ class StorageService {
       parties.push(record);
     }
     this.saveToLocal(STORAGE_KEYS.PARTIES, parties);
+
+    // If marked as state_head, associate with state
+    if (resolvedRole === 'state_head') {
+      const states = await this.getStates();
+      const sIdx = states.findIndex(s => s.id === partyData.state_id);
+      if (sIdx >= 0) {
+        states[sIdx].state_head_id = id;
+        this.saveToLocal(STORAGE_KEYS.STATES, states);
+      }
+    }
 
     const client = getSupabaseClient();
     if (client) {
@@ -2463,11 +2488,65 @@ class StorageService {
     return this.getFromLocal<StockTransfer[]>(STORAGE_KEYS.STOCK_TRANSFERS, []);
   }
 
+  async getPartyHeldStock(partyId: string, itemId?: string): Promise<number> {
+    const transfers = await this.getStockTransfers();
+    const sales = await this.getSales();
+    const parties = await this.getParties();
+    const party = parties.find(p => p.id === partyId);
+
+    let stock = 0;
+    if (!itemId && party && party.opening_stock) {
+      stock += Number(party.opening_stock) || 0;
+    }
+
+    transfers.forEach(t => {
+      if (itemId && t.item_id !== itemId) return;
+      if (t.status === 'cancelled') return;
+
+      const qty = Number(t.quantity) || 0;
+
+      // Inflow to party:
+      if (t.destination_party_id === partyId) {
+        if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
+          stock += qty;
+        } else if (t.transfer_type === 'return' && t.source_party_id) {
+          // Received return from downstream distributor
+          stock += qty;
+        } else if (t.transfer_type === 'return' && !t.source_party_id) {
+          // Legacy direct return to owner
+          stock -= qty;
+        } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
+          stock -= qty;
+        }
+      }
+
+      // Outflow from party (when source_party_id is this party):
+      if (t.source_party_id === partyId) {
+        stock -= qty;
+      }
+    });
+
+    sales.forEach(s => {
+      if (s.status !== 'completed') return;
+      if (s.party_id === partyId && s.deduct_from_party_stock && Array.isArray(s.items)) {
+        s.items.forEach(line => {
+          if (!itemId || line.item_id === itemId) {
+            stock -= (Number(line.quantity) || 0);
+          }
+        });
+      }
+    });
+
+    return Math.max(0, stock);
+  }
+
   async createStockTransfer(data: {
     transfer_date?: string;
     reference_no?: string;
     destination_state_id: string;
     destination_party_id: string;
+    source_party_id?: string;
+    transfer_level?: StockTransferLevel;
     item_id: string;
     quantity: number;
     rate?: number;
@@ -2484,22 +2563,65 @@ class StorageService {
     const item = items.find(i => i.id === data.item_id);
     if (!item) throw new Error('Selected jewellery item not found.');
 
+    const parties = await this.getParties();
     const enteredRate = typeof data.rate === 'number' && data.rate >= 0
       ? data.rate
       : (item.default_sale_rate || item.purchase_rate || 0);
     const totalVal = Math.round(qty * enteredRate * 100) / 100;
     const now = new Date().toISOString();
 
-    // Adjust main inventory stock where applicable
-    if (data.transfer_type === 'handover' || data.transfer_type === 'issue') {
-      if (item.current_stock < qty) {
-        console.warn(`Warehouse stock for "${item.name}" is low (${item.current_stock}), proceeding with handover.`);
+    // Determine transfer level
+    let level: StockTransferLevel = data.transfer_level || 'owner_to_party';
+    if (data.source_party_id) {
+      if (data.destination_party_id === 'owner' || !data.destination_party_id) {
+        level = 'party_to_owner';
+      } else {
+        level = 'party_to_party';
       }
-      item.current_stock = Math.max(0, item.current_stock - qty);
-      item.updated_at = now;
     } else if (data.transfer_type === 'return') {
+      level = 'party_to_owner';
+    }
+
+    // STRICT ATOMIC STOCK VALIDATION & MOVEMENT
+    if (level === 'owner_to_party') {
+      if (data.transfer_type === 'handover' || data.transfer_type === 'issue') {
+        if (item.current_stock < qty) {
+          throw new Error(
+            `Insufficient available stock for "${item.name}". Available in warehouse: ${item.current_stock} pieces, Requested: ${qty} pieces.`
+          );
+        }
+        item.current_stock -= qty;
+        item.updated_at = now;
+      }
+    } else if (level === 'party_to_party') {
+      const sourceParty = parties.find(p => p.id === data.source_party_id);
+      const sourceHeld = await this.getPartyHeldStock(data.source_party_id!, item.id);
+      if (sourceHeld < qty) {
+        const partyLabel = sourceParty?.party_type === 'state_head' ? 'State Head' : (sourceParty?.name || 'Sender party');
+        throw new Error(
+          `Insufficient stock held by ${partyLabel} for "${item.name}". Available: ${sourceHeld} pieces, Requested: ${qty} pieces.`
+        );
+      }
+      // CRITICAL: Owner warehouse stock item.current_stock is NOT touched!
+    } else if (level === 'party_to_owner') {
+      const returningPartyId = data.source_party_id || data.destination_party_id;
+      const returningParty = parties.find(p => p.id === returningPartyId);
+      const held = await this.getPartyHeldStock(returningPartyId, item.id);
+      if (held < qty) {
+        const partyLabel = returningParty?.party_type === 'state_head' ? 'State Head' : (returningParty?.name || 'Party');
+        throw new Error(
+          `Insufficient stock held by ${partyLabel} for "${item.name}". Available: ${held} pieces, Requested: ${qty} pieces.`
+        );
+      }
       item.current_stock += qty;
       item.updated_at = now;
+    } else if (data.transfer_type === 'settled' || data.transfer_type === 'sale') {
+      const held = await this.getPartyHeldStock(data.destination_party_id, item.id);
+      if (held < qty) {
+        throw new Error(
+          `Insufficient stock held by party for "${item.name}". Available: ${held} pieces, Requested: ${qty} pieces.`
+        );
+      }
     }
 
     const transferId = generateUUID();
@@ -2513,6 +2635,8 @@ class StorageService {
       transfer_date: data.transfer_date || now,
       destination_state_id: data.destination_state_id,
       destination_party_id: data.destination_party_id,
+      source_party_id: data.source_party_id || undefined,
+      transfer_level: level,
       item_id: item.id,
       item_name: item.name,
       quantity: qty,
@@ -2552,10 +2676,12 @@ class StorageService {
           await this.syncStatesPartiesCloudFallback();
         }
 
-        await client.from('items').update({
-          current_stock: item.current_stock,
-          updated_at: now
-        }).eq('id', item.id);
+        if (level === 'owner_to_party' || level === 'party_to_owner') {
+          await client.from('items').update({
+            current_stock: item.current_stock,
+            updated_at: now
+          }).eq('id', item.id);
+        }
       } catch (e) {
         console.warn('Notice connecting to stock_transfers:', e);
         await this.syncStatesPartiesCloudFallback();
@@ -2642,22 +2768,28 @@ class StorageService {
     const target = transfers.find(t => t.id === id);
     if (!target) return;
 
-    // Reverse warehouse stock
-    const items = await this.getItems();
-    const item = items.find(i => i.id === target.item_id);
-    if (item) {
-      const now = new Date().toISOString();
-      if (target.transfer_type === 'handover' || target.transfer_type === 'issue') {
-        item.current_stock += target.quantity;
-      } else if (target.transfer_type === 'return') {
-        item.current_stock = Math.max(0, item.current_stock - target.quantity);
-      }
-      item.updated_at = now;
-      this.saveToLocal(STORAGE_KEYS.ITEMS, items);
+    // Reverse warehouse stock ONLY if owner custody was affected
+    const isOwnerLevel = target.transfer_level === 'owner_to_party' ||
+      target.transfer_level === 'party_to_owner' ||
+      (!target.source_party_id && (target.transfer_type === 'handover' || target.transfer_type === 'issue' || target.transfer_type === 'return'));
 
-      const client = getSupabaseClient();
-      if (client) {
-        client.from('items').update({ current_stock: item.current_stock, updated_at: now }).eq('id', item.id).catch(() => {});
+    if (isOwnerLevel) {
+      const items = await this.getItems();
+      const item = items.find(i => i.id === target.item_id);
+      if (item) {
+        const now = new Date().toISOString();
+        if (target.transfer_type === 'handover' || target.transfer_type === 'issue') {
+          item.current_stock += target.quantity;
+        } else if (target.transfer_type === 'return') {
+          item.current_stock = Math.max(0, item.current_stock - target.quantity);
+        }
+        item.updated_at = now;
+        this.saveToLocal(STORAGE_KEYS.ITEMS, items);
+
+        const client = getSupabaseClient();
+        if (client) {
+          client.from('items').update({ current_stock: item.current_stock, updated_at: now }).eq('id', item.id).catch(() => {});
+        }
       }
     }
 
@@ -2669,6 +2801,126 @@ class StorageService {
       client.from('stock_transfers').delete().eq('id', id).catch(() => {});
     }
     await this.syncStatesPartiesCloudFallback();
+  }
+
+  async getDistributionDashboardStats(filters?: {
+    state_id?: string;
+    party_id?: string;
+    item_id?: string;
+    month?: string;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<DistributionMiniDashboardStats> {
+    const items = await this.getItems();
+    const parties = await this.getParties();
+    const transfers = await this.getStockTransfers();
+    const payments = await this.getPartyPayments();
+    const sales = await this.getSales();
+    const expenses = await this.getExpenses();
+
+    const activeItems = items.filter(i => !i.is_archived && (!filters?.item_id || i.id === filters.item_id));
+    const activeParties = parties.filter(p => !p.is_archived && (!filters?.state_id || p.state_id === filters.state_id) && (!filters?.party_id || p.id === filters.party_id));
+
+    // 1 & 2. Owner available stock units and value
+    const ownerUnits = activeItems.reduce((sum, i) => sum + i.current_stock, 0);
+    const ownerValue = activeItems.reduce((sum, i) => sum + (i.current_stock * (i.purchase_rate || i.default_sale_rate || 0)), 0);
+
+    // Filter transfers by date/item/state/party if specified
+    const filteredTransfers = transfers.filter(t => {
+      if (t.status === 'cancelled') return false;
+      if (filters?.item_id && t.item_id !== filters.item_id) return false;
+      if (filters?.state_id && t.destination_state_id !== filters.state_id) return false;
+      if (filters?.party_id && t.destination_party_id !== filters.party_id && t.source_party_id !== filters.party_id) return false;
+      if (filters?.startDate && new Date(t.transfer_date) < new Date(filters.startDate + 'T00:00:00')) return false;
+      if (filters?.endDate && new Date(t.transfer_date) > new Date(filters.endDate + 'T23:59:59')) return false;
+      if (filters?.month && !t.transfer_date.startsWith(filters.month)) return false;
+      return true;
+    });
+
+    // 3. Total stock handed over to state heads (from owner)
+    let totalHandedOverToStateHeads = 0;
+    filteredTransfers.forEach(t => {
+      if ((t.transfer_type === 'handover' || t.transfer_type === 'issue') && (!t.source_party_id || t.transfer_level === 'owner_to_party')) {
+        const destParty = parties.find(p => p.id === t.destination_party_id);
+        if (!destParty || destParty.party_type === 'state_head' || !destParty.party_type) {
+          totalHandedOverToStateHeads += t.quantity;
+        }
+      }
+    });
+
+    // 4 & 5. Held stock by state heads and distributors
+    let stateHeadsHeldStock = 0;
+    let distributorsHeldStock = 0;
+
+    for (const p of activeParties) {
+      let pStock = 0;
+      for (const it of activeItems) {
+        const held = await this.getPartyHeldStock(p.id, it.id);
+        pStock += held;
+      }
+      if (p.party_type === 'distributor') {
+        distributorsHeldStock += pStock;
+      } else {
+        stateHeadsHeldStock += pStock;
+      }
+    }
+
+    // 6. Total stock outside custody = state heads + distributors
+    const totalOutsideCustody = stateHeadsHeldStock + distributorsHeldStock;
+
+    // 7. Total payments actually received
+    const filteredPayments = payments.filter(pay => {
+      if (pay.payment_type !== 'received') return false;
+      const party = parties.find(p => p.id === pay.party_id);
+      if (filters?.state_id && party?.state_id !== filters.state_id) return false;
+      if (filters?.party_id && pay.party_id !== filters.party_id) return false;
+      if (filters?.startDate && new Date(pay.payment_date) < new Date(filters.startDate + 'T00:00:00')) return false;
+      if (filters?.endDate && new Date(pay.payment_date) > new Date(filters.endDate + 'T23:59:59')) return false;
+      if (filters?.month && !pay.payment_date.startsWith(filters.month)) return false;
+      return true;
+    });
+    const totalPaymentsReceived = filteredPayments.reduce((sum, p) => sum + p.amount, 0);
+
+    // 8. Outstanding financial receivables
+    let totalReceivables = 0;
+    activeParties.forEach(p => {
+      const pSales = sales.filter(s => s.party_id === p.id && s.status === 'completed');
+      const pPayments = payments.filter(pay => pay.party_id === p.id);
+      const opening = Number(p.opening_balance) || 0;
+      const salesTotal = pSales.reduce((sum, s) => sum + s.grand_total, 0);
+      const salesReceived = pSales.reduce((sum, s) => sum + (s.amount_received || 0), 0);
+      const directReceived = pPayments.filter(pay => pay.payment_type === 'received').reduce((sum, pay) => sum + pay.amount, 0);
+      const directPaid = pPayments.filter(pay => pay.payment_type === 'paid').reduce((sum, pay) => sum + pay.amount, 0);
+      const pos = opening + salesTotal + directPaid - (salesReceived + directReceived);
+      if (pos > 0) totalReceivables += pos;
+    });
+
+    // 9. Total distribution expenses
+    const filteredExpenses = expenses.filter(e => {
+      if (e.is_cancelled) return false;
+      if (filters?.state_id && e.state_id && e.state_id !== filters.state_id) return false;
+      if (filters?.party_id && e.party_id && e.party_id !== filters.party_id) return false;
+      if (filters?.startDate && new Date(e.expense_date) < new Date(filters.startDate + 'T00:00:00')) return false;
+      if (filters?.endDate && new Date(e.expense_date) > new Date(filters.endDate + 'T23:59:59')) return false;
+      if (filters?.month && !e.expense_date.startsWith(filters.month)) return false;
+      if (!filters?.state_id && !filters?.party_id) {
+        return e.state_id || e.party_id || ['Transport', 'Packaging'].includes(e.category);
+      }
+      return true;
+    });
+    const totalDistributionExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
+
+    return {
+      owner_available_stock_units: ownerUnits,
+      owner_available_stock_value: Math.round(ownerValue * 100) / 100,
+      total_handed_over_to_state_heads: totalHandedOverToStateHeads,
+      current_stock_held_by_state_heads: stateHeadsHeldStock,
+      current_stock_held_by_distributors: distributorsHeldStock,
+      total_stock_outside_custody: totalOutsideCustody,
+      total_payments_received: Math.round(totalPaymentsReceived * 100) / 100,
+      outstanding_financial_receivables: Math.round(totalReceivables * 100) / 100,
+      total_distribution_expenses: Math.round(totalDistributionExpenses * 100) / 100
+    };
   }
 
   // --- PARTY PAYMENTS ---
@@ -2772,7 +3024,9 @@ class StorageService {
     const state = states.find(s => s.id === party.state_id);
 
     const transfers = await this.getStockTransfers();
-    const partyTransfers = transfers.filter(t => t.destination_party_id === partyId);
+    const partyTransfers = transfers.filter(
+      t => t.destination_party_id === partyId || t.source_party_id === partyId
+    );
 
     const sales = await this.getSales();
     const partySales = sales.filter(s => s.party_id === partyId && s.status === 'completed');
@@ -2833,48 +3087,13 @@ class StorageService {
       const rate = Number(t.rate) || 0;
       const totalVal = typeof t.total_value === 'number' ? t.total_value : Math.round(qty * rate * 100) / 100;
 
-      if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
-        entry.handover_qty += qty;
-        entry.handover_value += totalVal;
-        entry.batches.push({
-          id: t.id,
-          date: t.transfer_date,
-          rate,
-          original_qty: qty,
-          remaining_qty: qty
-        });
-      } else if (t.transfer_type === 'return') {
-        entry.returned_qty += qty;
-        // FIFO consumption from earlier batches
-        let need = qty;
-        let consumedVal = 0;
-        for (const b of entry.batches) {
-          if (need <= 0) break;
-          if (b.remaining_qty > 0) {
-            const take = Math.min(b.remaining_qty, need);
-            b.remaining_qty -= take;
-            need -= take;
-            consumedVal += take * b.rate;
-          }
-        }
-        entry.returned_value += (t.total_value && t.total_value > 0 ? t.total_value : consumedVal);
-      } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
-        entry.sold_settled_qty += qty;
-        // FIFO consumption from earlier batches
-        let need = qty;
-        let consumedVal = 0;
-        for (const b of entry.batches) {
-          if (need <= 0) break;
-          if (b.remaining_qty > 0) {
-            const take = Math.min(b.remaining_qty, need);
-            b.remaining_qty -= take;
-            need -= take;
-            consumedVal += take * b.rate;
-          }
-        }
-        entry.sold_settled_value += (t.total_value && t.total_value > 0 ? t.total_value : consumedVal);
-      } else if (t.transfer_type === 'adjustment') {
-        if (qty >= 0) {
+      const isDestination = t.destination_party_id === partyId;
+      const isSource = t.source_party_id === partyId;
+
+      if (isDestination) {
+        if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
+          entry.handover_qty += qty;
+          entry.handover_value += totalVal;
           entry.batches.push({
             id: t.id,
             date: t.transfer_date,
@@ -2882,16 +3101,83 @@ class StorageService {
             original_qty: qty,
             remaining_qty: qty
           });
-        } else {
-          let need = Math.abs(qty);
+        } else if (t.transfer_type === 'return' && t.source_party_id) {
+          // Received returned stock from downstream distributor
+          entry.batches.push({
+            id: t.id,
+            date: t.transfer_date,
+            rate,
+            original_qty: qty,
+            remaining_qty: qty
+          });
+        } else if (t.transfer_type === 'return' && !t.source_party_id) {
+          // Legacy direct return to owner
+          entry.returned_qty += qty;
+          let need = qty;
+          let consumedVal = 0;
           for (const b of entry.batches) {
             if (need <= 0) break;
             if (b.remaining_qty > 0) {
               const take = Math.min(b.remaining_qty, need);
               b.remaining_qty -= take;
               need -= take;
+              consumedVal += take * b.rate;
             }
           }
+          entry.returned_value += (t.total_value && t.total_value > 0 ? t.total_value : consumedVal);
+        } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
+          entry.sold_settled_qty += qty;
+          let need = qty;
+          let consumedVal = 0;
+          for (const b of entry.batches) {
+            if (need <= 0) break;
+            if (b.remaining_qty > 0) {
+              const take = Math.min(b.remaining_qty, need);
+              b.remaining_qty -= take;
+              need -= take;
+              consumedVal += take * b.rate;
+            }
+          }
+          entry.sold_settled_value += (t.total_value && t.total_value > 0 ? t.total_value : consumedVal);
+        } else if (t.transfer_type === 'adjustment') {
+          if (qty >= 0) {
+            entry.batches.push({
+              id: t.id,
+              date: t.transfer_date,
+              rate,
+              original_qty: qty,
+              remaining_qty: qty
+            });
+          } else {
+            let need = Math.abs(qty);
+            for (const b of entry.batches) {
+              if (need <= 0) break;
+              if (b.remaining_qty > 0) {
+                const take = Math.min(b.remaining_qty, need);
+                b.remaining_qty -= take;
+                need -= take;
+              }
+            }
+          }
+        }
+      } else if (isSource) {
+        // Outward transfer from this party
+        if (t.transfer_type === 'return') {
+          entry.returned_qty += qty;
+        }
+        let need = qty;
+        let consumedVal = 0;
+        for (const b of entry.batches) {
+          if (need <= 0) break;
+          if (b.remaining_qty > 0) {
+            const take = Math.min(b.remaining_qty, need);
+            b.remaining_qty -= take;
+            need -= take;
+            consumedVal += take * b.rate;
+          }
+        }
+        if (t.transfer_type === 'return') {
+          entry.returned_value += (t.total_value && t.total_value > 0 ? t.total_value : consumedVal);
         }
       }
     }
