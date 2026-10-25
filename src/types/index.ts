@@ -249,6 +249,33 @@ export interface PartyMoneyLedgerSummary {
   net_position: number;   // >0 party owes us, <0 we owe party
 }
 
+// --- PARTY PAYMENT STATUS OVERVIEW ---
+export type PartyFinancialStatus = 'due' | 'partial' | 'complete' | 'advance' | 'no_transactions';
+
+export interface PartyPaymentStatusOverview {
+  party_id: string;
+  party_name: string;
+  state_id: string;
+  state_name: string;
+  party_type?: PartyRole;
+  phone?: string;
+  address?: string;
+  opening_balance: number;
+  total_obligations: number;
+  total_sales_billed: number;
+  total_received: number;
+  total_paid_out: number;
+  net_position: number;
+  outstanding_amount: number;
+  credit_balance: number;
+  status: PartyFinancialStatus;
+  status_label: string;
+  last_payment_date?: string;
+  last_payment_amount?: number;
+  invoices_count: number;
+  payments_count: number;
+}
+
 // --- OPERATING EXPENSES ---
 export type ExpenseCategory =
   | 'Rent'

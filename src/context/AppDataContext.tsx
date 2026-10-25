@@ -19,7 +19,8 @@ import {
   PartyPayment,
   PartyStockLedgerSummary,
   PartyMoneyLedgerSummary,
-  ItemUsageReport
+  ItemUsageReport,
+  PartyPaymentStatusOverview
 } from '../types';
 import { storage } from '../lib/storage';
 
@@ -125,6 +126,18 @@ interface AppDataContextType {
   }>;
   getPartyHeldStock: (partyId: string, itemId?: string) => Promise<number>;
   getDistributionDashboardStats: (filters?: any) => Promise<DistributionMiniDashboardStats>;
+  getPartyPaymentStatusOverview: (filters?: any) => Promise<{
+    parties: PartyPaymentStatusOverview[];
+    summary: {
+      dueCount: number;
+      partialCount: number;
+      completeCount: number;
+      advanceCount: number;
+      noTransactionsCount: number;
+      totalOutstanding: number;
+      totalPaymentsReceived: number;
+    };
+  }>;
 }
 
 const AppDataContext = createContext<AppDataContextType | undefined>(undefined);
@@ -568,6 +581,10 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return await storage.getDistributionDashboardStats(filters);
   };
 
+  const getPartyPaymentStatusOverview = async (filters?: any) => {
+    return await storage.getPartyPaymentStatusOverview(filters);
+  };
+
   return (
     <AppDataContext.Provider
       value={{
@@ -612,7 +629,8 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         recordPartyPayment,
         getPartyLedger,
         getPartyHeldStock,
-        getDistributionDashboardStats
+        getDistributionDashboardStats,
+        getPartyPaymentStatusOverview
       }}
     >
       {children}

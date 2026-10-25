@@ -20,7 +20,9 @@ import {
   PartyStockItemLedger,
   PartyStockLedgerSummary,
   PartyMoneyLedgerSummary,
-  PaymentStatus
+  PaymentStatus,
+  PartyFinancialStatus,
+  PartyPaymentStatusOverview
 } from '../types';
 
 export function generateUUID(): string {
@@ -3549,6 +3551,216 @@ class StorageService {
       transfers: partyTransfers,
       sales: partySales,
       payments: specificPayments
+    };
+  }
+
+  // --- PARTY PAYMENT STATUS OVERVIEW ---
+  async getPartyPaymentStatusOverview(filters?: {
+    state_id?: string;
+    party_id?: string;
+    status?: PartyFinancialStatus;
+    searchQuery?: string;
+    startDate?: string;
+    endDate?: string;
+    month?: string;
+    sortBy?: 'outstanding_desc' | 'outstanding_asc' | 'payment_date_desc' | 'name_asc';
+  }): Promise<{
+    parties: PartyPaymentStatusOverview[];
+    summary: {
+      dueCount: number;
+      partialCount: number;
+      completeCount: number;
+      advanceCount: number;
+      noTransactionsCount: number;
+      totalOutstanding: number;
+      totalPaymentsReceived: number;
+    };
+  }> {
+    const parties = await this.getParties();
+    const states = await this.getStates();
+    const sales = await this.getSales();
+    const payments = await this.getPartyPayments();
+
+    const activeParties = parties.filter(p => !p.is_archived);
+    const records: PartyPaymentStatusOverview[] = [];
+
+    let dueCount = 0;
+    let partialCount = 0;
+    let completeCount = 0;
+    let advanceCount = 0;
+    let noTransactionsCount = 0;
+    let totalOutstanding = 0;
+    let totalPaymentsReceivedOverall = 0;
+
+    for (const p of activeParties) {
+      const state = states.find(s => s.id === p.state_id);
+
+      // Invoices/sales for this party
+      const partySales = sales.filter(s => {
+        if (s.party_id !== p.id || s.status !== 'completed') return false;
+        if (filters?.endDate && new Date(s.sale_date) > new Date(filters.endDate + 'T23:59:59')) return false;
+        if (filters?.startDate && new Date(s.sale_date) < new Date(filters.startDate + 'T00:00:00')) return false;
+        if (filters?.month && !s.sale_date.startsWith(filters.month)) return false;
+        return true;
+      });
+
+      // Payments for this party
+      const specificPayments = payments.filter(pay => {
+        if (pay.party_id !== p.id) return false;
+        if (filters?.endDate && new Date(pay.payment_date) > new Date(filters.endDate + 'T23:59:59')) return false;
+        if (filters?.startDate && new Date(pay.payment_date) < new Date(filters.startDate + 'T00:00:00')) return false;
+        if (filters?.month && !pay.payment_date.startsWith(filters.month)) return false;
+        return true;
+      });
+
+      const openingBalance = Number(p.opening_balance) || 0;
+      const totalSalesBilled = partySales.reduce((sum, s) => sum + s.grand_total, 0);
+      const totalSalePaymentsReceived = partySales.reduce((sum, s) => sum + (s.amount_received || 0), 0);
+      const directPaymentsReceived = specificPayments
+        .filter(pay => pay.payment_type === 'received')
+        .reduce((sum, pay) => sum + pay.amount, 0);
+      const directPaymentsPaid = specificPayments
+        .filter(pay => pay.payment_type === 'paid')
+        .reduce((sum, pay) => sum + pay.amount, 0);
+
+      const totalReceived = Math.round((totalSalePaymentsReceived + directPaymentsReceived) * 100) / 100;
+      const totalPaidOut = Math.round(directPaymentsPaid * 100) / 100;
+      const totalObligations = Math.round(((openingBalance > 0 ? openingBalance : 0) + totalSalesBilled) * 100) / 100;
+
+      const netPosition = Math.round((openingBalance + totalSalesBilled + totalPaidOut - totalReceived) * 100) / 100;
+      const outstandingAmount = netPosition > 0 ? netPosition : 0;
+      const creditBalance = netPosition < 0 ? Math.abs(netPosition) : 0;
+
+      // Find latest payment date and amount
+      let latestPaymentDate: string | undefined;
+      let latestPaymentAmount: number | undefined;
+
+      const paymentDates: Array<{ date: string; amount: number }> = [];
+      partySales.forEach(s => {
+        if (s.amount_received && s.amount_received > 0) {
+          paymentDates.push({ date: s.sale_date, amount: s.amount_received });
+        }
+      });
+      specificPayments.forEach(pay => {
+        if (pay.payment_type === 'received' && pay.amount > 0) {
+          paymentDates.push({ date: pay.payment_date, amount: pay.amount });
+        }
+      });
+      if (paymentDates.length > 0) {
+        paymentDates.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        latestPaymentDate = paymentDates[0].date;
+        latestPaymentAmount = paymentDates[0].amount;
+      }
+
+      // Determine Status strictly by accounting rules
+      let status: PartyFinancialStatus = 'no_transactions';
+      let statusLabel = 'No Transactions';
+
+      const hasObligations = openingBalance !== 0 || partySales.length > 0;
+      const hasPayments = totalReceived > 0 || totalPaidOut > 0;
+
+      if (!hasObligations && !hasPayments) {
+        status = 'no_transactions';
+        statusLabel = 'No Transactions';
+      } else if (netPosition > 0) {
+        if (totalReceived > 0) {
+          status = 'partial';
+          statusLabel = 'Partially Paid';
+        } else {
+          status = 'due';
+          statusLabel = 'Due';
+        }
+      } else if (netPosition < 0) {
+        status = 'advance';
+        statusLabel = 'Advance / Credit';
+      } else {
+        // netPosition === 0
+        status = 'complete';
+        statusLabel = 'Payment Complete';
+      }
+
+      const record: PartyPaymentStatusOverview = {
+        party_id: p.id,
+        party_name: p.name,
+        state_id: p.state_id,
+        state_name: state?.name || 'Unknown State',
+        party_type: p.party_type,
+        phone: p.phone,
+        address: p.address,
+        opening_balance: openingBalance,
+        total_obligations: totalObligations,
+        total_sales_billed: totalSalesBilled,
+        total_received: totalReceived,
+        total_paid_out: totalPaidOut,
+        net_position: netPosition,
+        outstanding_amount: outstandingAmount,
+        credit_balance: creditBalance,
+        status,
+        status_label: statusLabel,
+        last_payment_date: latestPaymentDate,
+        last_payment_amount: latestPaymentAmount,
+        invoices_count: partySales.length,
+        payments_count: specificPayments.length
+      };
+
+      records.push(record);
+    }
+
+    // Apply Filters
+    let filtered = records.filter(r => {
+      if (filters?.state_id && filters.state_id !== 'all' && r.state_id !== filters.state_id) return false;
+      if (filters?.party_id && filters.party_id !== 'all' && r.party_id !== filters.party_id) return false;
+      if (filters?.status && filters.status !== 'all' && r.status !== filters.status) return false;
+      if (filters?.searchQuery) {
+        const q = filters.searchQuery.toLowerCase().trim();
+        const matchesName = r.party_name.toLowerCase().includes(q);
+        const matchesState = r.state_name.toLowerCase().includes(q);
+        const matchesPhone = r.phone ? r.phone.toLowerCase().includes(q) : false;
+        if (!matchesName && !matchesState && !matchesPhone) return false;
+      }
+      return true;
+    });
+
+    // Compute Summary across filtered parties (never double count)
+    filtered.forEach(r => {
+      if (r.status === 'due') dueCount++;
+      else if (r.status === 'partial') partialCount++;
+      else if (r.status === 'complete') completeCount++;
+      else if (r.status === 'advance') advanceCount++;
+      else if (r.status === 'no_transactions') noTransactionsCount++;
+
+      totalOutstanding += r.outstanding_amount;
+      totalPaymentsReceivedOverall += r.total_received;
+    });
+
+    // Sorting
+    const sortBy = filters?.sortBy || 'outstanding_desc';
+    filtered.sort((a, b) => {
+      if (sortBy === 'outstanding_desc') {
+        return b.outstanding_amount - a.outstanding_amount;
+      } else if (sortBy === 'outstanding_asc') {
+        return a.outstanding_amount - b.outstanding_amount;
+      } else if (sortBy === 'payment_date_desc') {
+        const dateA = a.last_payment_date ? new Date(a.last_payment_date).getTime() : 0;
+        const dateB = b.last_payment_date ? new Date(b.last_payment_date).getTime() : 0;
+        return dateB - dateA;
+      } else if (sortBy === 'name_asc') {
+        return a.party_name.localeCompare(b.party_name);
+      }
+      return 0;
+    });
+
+    return {
+      parties: filtered,
+      summary: {
+        dueCount,
+        partialCount,
+        completeCount,
+        advanceCount,
+        noTransactionsCount,
+        totalOutstanding: Math.round(totalOutstanding * 100) / 100,
+        totalPaymentsReceived: Math.round(totalPaymentsReceivedOverall * 100) / 100
+      }
     };
   }
 

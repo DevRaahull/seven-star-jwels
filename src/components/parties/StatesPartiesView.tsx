@@ -42,6 +42,7 @@ import {
 import { useAppData } from '../../context/AppDataContext';
 import { formatCurrency, formatDate } from '../../lib/formatters';
 import { StateRecord, PartyRecord, PartyRole, StockTransfer, PartyPayment, StockTransferType, StockTransferLevel, DistributionMiniDashboardStats } from '../../types';
+import { PartyPaymentStatusView } from './PartyPaymentStatusView';
 
 export const StatesPartiesView: React.FC = () => {
   const {
@@ -68,8 +69,8 @@ export const StatesPartiesView: React.FC = () => {
   const activeParties = useMemo(() => parties.filter(p => !p.is_archived), [parties]);
 
   // Main UI Mode & Navigation
-  // 'dashboard' | 'hierarchy' | 'states' | 'parties'
-  const [activeViewTab, setActiveViewTab] = useState<'dashboard' | 'hierarchy' | 'states' | 'parties'>('dashboard');
+  // 'dashboard' | 'hierarchy' | 'states' | 'parties' | 'payments'
+  const [activeViewTab, setActiveViewTab] = useState<'dashboard' | 'hierarchy' | 'states' | 'parties' | 'payments'>('dashboard');
   const [selectedStateId, setSelectedStateId] = useState<string | null>(null);
   const [selectedPartyId, setSelectedPartyId] = useState<string | null>(null);
 
@@ -1566,6 +1567,21 @@ export const StatesPartiesView: React.FC = () => {
               <span>All Wholesale Parties ({activeParties.length})</span>
             </button>
 
+            <button
+              onClick={() => {
+                setActiveViewTab('payments');
+                setSelectedStateId(null);
+              }}
+              className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+                activeViewTab === 'payments' && !selectedStateId
+                  ? 'border-[#D6B36A] text-[#D6B36A]'
+                  : 'border-transparent text-[#8A95A8] hover:text-[#F5F3EE]'
+              }`}
+            >
+              <Receipt size={15} />
+              <span>Party Payment Status</span>
+            </button>
+
             {selectedStateId && (
               <button
                 className="px-4 py-2.5 text-xs font-semibold border-b-2 border-[#D6B36A] text-[#D6B36A] flex items-center gap-2 whitespace-nowrap"
@@ -2789,6 +2805,15 @@ export const StatesPartiesView: React.FC = () => {
                 </div>
               )}
             </div>
+          )}
+
+          {/* VIEW: PARTY PAYMENT STATUS OVERVIEW */}
+          {activeViewTab === 'payments' && !selectedStateId && (
+            <PartyPaymentStatusView
+              onOpenPartyLedger={(partyId: string) => {
+                setSelectedPartyId(partyId);
+              }}
+            />
           )}
         </div>
       )}

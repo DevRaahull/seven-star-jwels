@@ -1688,6 +1688,399 @@ runTest('50. Handed Over to State Heads Card: Accurately displays 0 pcs when all
   assert.strictEqual(totalHandedOverToStateHeads, 0, 'Handed Over to State Heads metric must strictly be 0 pcs');
 });
 
+// Helper calculation engine identical to StorageService.getPartyPaymentStatusOverview
+function calculatePartyPaymentOverview(parties, states, sales, payments, filters = {}) {
+  const activeParties = parties.filter(p => !p.is_archived);
+  const stateMap = new Map(states.map(s => [s.id, s]));
+
+  let dueCount = 0;
+  let partialCount = 0;
+  let completeCount = 0;
+  let advanceCount = 0;
+  let noTransactionsCount = 0;
+  let totalOutstanding = 0;
+  let totalPaymentsReceivedOverall = 0;
+
+  const records = [];
+
+  for (const p of activeParties) {
+    const state = stateMap.get(p.state_id);
+
+    const partySales = sales.filter(s => {
+      if (s.party_id !== p.id || s.status !== 'completed') return false;
+      if (filters?.endDate && new Date(s.sale_date) > new Date(filters.endDate + 'T23:59:59')) return false;
+      if (filters?.startDate && new Date(s.sale_date) < new Date(filters.startDate + 'T00:00:00')) return false;
+      if (filters?.month && !s.sale_date.startsWith(filters.month)) return false;
+      return true;
+    });
+
+    const specificPayments = payments.filter(pay => {
+      if (pay.party_id !== p.id) return false;
+      if (filters?.endDate && new Date(pay.payment_date) > new Date(filters.endDate + 'T23:59:59')) return false;
+      if (filters?.startDate && new Date(pay.payment_date) < new Date(filters.startDate + 'T00:00:00')) return false;
+      if (filters?.month && !pay.payment_date.startsWith(filters.month)) return false;
+      return true;
+    });
+
+    const openingBalance = Number(p.opening_balance) || 0;
+    const totalSalesBilled = partySales.reduce((sum, s) => sum + s.grand_total, 0);
+    const totalSalePaymentsReceived = partySales.reduce((sum, s) => sum + (s.amount_received || 0), 0);
+    const directPaymentsReceived = specificPayments
+      .filter(pay => pay.payment_type === 'received')
+      .reduce((sum, pay) => sum + pay.amount, 0);
+    const directPaymentsPaid = specificPayments
+      .filter(pay => pay.payment_type === 'paid')
+      .reduce((sum, pay) => sum + pay.amount, 0);
+
+    const totalReceived = Math.round((totalSalePaymentsReceived + directPaymentsReceived) * 100) / 100;
+    const totalPaidOut = Math.round(directPaymentsPaid * 100) / 100;
+    const totalObligations = Math.round(((openingBalance > 0 ? openingBalance : 0) + totalSalesBilled) * 100) / 100;
+
+    const netPosition = Math.round((openingBalance + totalSalesBilled + totalPaidOut - totalReceived) * 100) / 100;
+    const outstandingAmount = netPosition > 0 ? netPosition : 0;
+    const creditBalance = netPosition < 0 ? Math.abs(netPosition) : 0;
+
+    let latestPaymentDate;
+    let latestPaymentAmount;
+    const paymentDates = [];
+    partySales.forEach(s => {
+      if (s.amount_received && s.amount_received > 0) {
+        paymentDates.push({ date: s.sale_date, amount: s.amount_received });
+      }
+    });
+    specificPayments.forEach(pay => {
+      if (pay.payment_type === 'received' && pay.amount > 0) {
+        paymentDates.push({ date: pay.payment_date, amount: pay.amount });
+      }
+    });
+    if (paymentDates.length > 0) {
+      paymentDates.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      latestPaymentDate = paymentDates[0].date;
+      latestPaymentAmount = paymentDates[0].amount;
+    }
+
+    let status = 'no_transactions';
+    let statusLabel = 'No Transactions';
+
+    const hasObligations = openingBalance !== 0 || partySales.length > 0;
+    const hasPayments = totalReceived > 0 || totalPaidOut > 0;
+
+    if (!hasObligations && !hasPayments) {
+      status = 'no_transactions';
+      statusLabel = 'No Transactions';
+    } else if (netPosition > 0) {
+      if (totalReceived > 0) {
+        status = 'partial';
+        statusLabel = 'Partially Paid';
+      } else {
+        status = 'due';
+        statusLabel = 'Due';
+      }
+    } else if (netPosition < 0) {
+      status = 'advance';
+      statusLabel = 'Advance / Credit';
+    } else {
+      status = 'complete';
+      statusLabel = 'Payment Complete';
+    }
+
+    records.push({
+      party_id: p.id,
+      party_name: p.name,
+      state_id: p.state_id,
+      state_name: state?.name || 'Unknown State',
+      party_type: p.party_type,
+      phone: p.phone,
+      opening_balance: openingBalance,
+      total_obligations: totalObligations,
+      total_sales_billed: totalSalesBilled,
+      total_received: totalReceived,
+      total_paid_out: totalPaidOut,
+      net_position: netPosition,
+      outstanding_amount: outstandingAmount,
+      credit_balance: creditBalance,
+      status,
+      status_label: statusLabel,
+      last_payment_date: latestPaymentDate,
+      last_payment_amount: latestPaymentAmount,
+      invoices_count: partySales.length,
+      payments_count: specificPayments.length
+    });
+  }
+
+  let filtered = records.filter(r => {
+    if (filters?.state_id && filters.state_id !== 'all' && r.state_id !== filters.state_id) return false;
+    if (filters?.party_id && filters.party_id !== 'all' && r.party_id !== filters.party_id) return false;
+    if (filters?.status && filters.status !== 'all' && r.status !== filters.status) return false;
+    if (filters?.searchQuery) {
+      const q = filters.searchQuery.toLowerCase().trim();
+      const matchesName = r.party_name.toLowerCase().includes(q);
+      const matchesState = r.state_name.toLowerCase().includes(q);
+      const matchesPhone = r.phone ? r.phone.toLowerCase().includes(q) : false;
+      if (!matchesName && !matchesState && !matchesPhone) return false;
+    }
+    return true;
+  });
+
+  filtered.forEach(r => {
+    if (r.status === 'due') dueCount++;
+    else if (r.status === 'partial') partialCount++;
+    else if (r.status === 'complete') completeCount++;
+    else if (r.status === 'advance') advanceCount++;
+    else if (r.status === 'no_transactions') noTransactionsCount++;
+
+    totalOutstanding += r.outstanding_amount;
+    totalPaymentsReceivedOverall += r.total_received;
+  });
+
+  return {
+    parties: filtered,
+    summary: {
+      dueCount,
+      partialCount,
+      completeCount,
+      advanceCount,
+      noTransactionsCount,
+      totalOutstanding: Math.round(totalOutstanding * 100) / 100,
+      totalPaymentsReceived: Math.round(totalPaymentsReceivedOverall * 100) / 100
+    }
+  };
+}
+
+// ====================================================
+// TEST 51: Party with unpaid valid obligation appears as Due
+// ====================================================
+runTest('51. Party Payment Status: Party with unpaid valid obligation appears as Due', () => {
+  const states = [{ id: 'st-raj', name: 'Rajasthan' }];
+  const parties = [{ id: 'p-due', name: 'Jaipur Jewel Mart', state_id: 'st-raj', opening_balance: 0, is_archived: false }];
+  const sales = [
+    { id: 'sale-1', party_id: 'p-due', grand_total: 50000, amount_received: 0, amount_due: 50000, status: 'completed', sale_date: '2026-03-01' }
+  ];
+  const payments = [];
+
+  const overview = calculatePartyPaymentOverview(parties, states, sales, payments);
+  assert.strictEqual(overview.parties.length, 1);
+  const p = overview.parties[0];
+  assert.strictEqual(p.status, 'due');
+  assert.strictEqual(p.status_label, 'Due');
+  assert.strictEqual(p.total_obligations, 50000);
+  assert.strictEqual(p.total_received, 0);
+  assert.strictEqual(p.outstanding_amount, 50000);
+  assert.strictEqual(overview.summary.dueCount, 1);
+  assert.strictEqual(overview.summary.totalOutstanding, 50000);
+});
+
+// ====================================================
+// TEST 52: Party with partial payment appears as Partially Paid with correct remaining amount
+// ====================================================
+runTest('52. Party Payment Status: Party with partial payment appears as Partially Paid with correct remaining amount', () => {
+  const states = [{ id: 'st-raj', name: 'Rajasthan' }];
+  const parties = [{ id: 'p-partial', name: 'Udaipur Ornaments', state_id: 'st-raj', opening_balance: 0, is_archived: false }];
+  const sales = [
+    { id: 'sale-2', party_id: 'p-partial', grand_total: 60000, amount_received: 25000, amount_due: 35000, status: 'completed', sale_date: '2026-03-05' }
+  ];
+  const payments = [];
+
+  const overview = calculatePartyPaymentOverview(parties, states, sales, payments);
+  const p = overview.parties[0];
+  assert.strictEqual(p.status, 'partial');
+  assert.strictEqual(p.status_label, 'Partially Paid');
+  assert.strictEqual(p.total_received, 25000);
+  assert.strictEqual(p.outstanding_amount, 35000);
+  assert.strictEqual(overview.summary.partialCount, 1);
+  assert.strictEqual(overview.summary.totalOutstanding, 35000);
+});
+
+// ====================================================
+// TEST 53: Party with fully paid obligation appears as Payment Complete
+// ====================================================
+runTest('53. Party Payment Status: Party with fully paid obligation appears as Payment Complete', () => {
+  const states = [{ id: 'st-ker', name: 'Kerala' }];
+  const parties = [{ id: 'p-comp', name: 'Cochin Gold Palace', state_id: 'st-ker', opening_balance: 0, is_archived: false }];
+  const sales = [
+    { id: 'sale-3', party_id: 'p-comp', grand_total: 45000, amount_received: 45000, amount_due: 0, status: 'completed', sale_date: '2026-03-02' }
+  ];
+  const payments = [];
+
+  const overview = calculatePartyPaymentOverview(parties, states, sales, payments);
+  const p = overview.parties[0];
+  assert.strictEqual(p.status, 'complete');
+  assert.strictEqual(p.status_label, 'Payment Complete');
+  assert.strictEqual(p.outstanding_amount, 0);
+  assert.strictEqual(p.total_received, 45000);
+  assert.strictEqual(overview.summary.completeCount, 1);
+  assert.strictEqual(overview.summary.totalOutstanding, 0);
+});
+
+// ====================================================
+// TEST 54: Party with no financial obligation is not marked as Due (shows No Transactions)
+// ====================================================
+runTest('54. Party Payment Status: Party with no financial obligation is not marked as Due (shows No Transactions)', () => {
+  const states = [{ id: 'st-goa', name: 'Goa' }];
+  const parties = [{ id: 'p-none', name: 'Panaji Jewellers', state_id: 'st-goa', opening_balance: 0, is_archived: false }];
+  const sales = [];
+  const payments = [];
+
+  const overview = calculatePartyPaymentOverview(parties, states, sales, payments);
+  const p = overview.parties[0];
+  assert.strictEqual(p.status, 'no_transactions');
+  assert.strictEqual(p.status_label, 'No Transactions');
+  assert.strictEqual(p.outstanding_amount, 0);
+  assert.strictEqual(p.total_obligations, 0);
+  assert.notStrictEqual(p.status, 'due', 'Party with 0 obligations must NEVER be marked as Due');
+  assert.strictEqual(overview.summary.noTransactionsCount, 1);
+  assert.strictEqual(overview.summary.dueCount, 0);
+});
+
+// ====================================================
+// TEST 55: Stock transfer without financial obligation creates ZERO outstanding amount
+// ====================================================
+runTest('55. Party Payment Status: Stock transfer without financial obligation creates ZERO outstanding amount', () => {
+  const states = [{ id: 'st-raj', name: 'Rajasthan' }];
+  const parties = [{ id: 'p-stockonly', name: 'Ajmer Distributor', state_id: 'st-raj', opening_balance: 0, is_archived: false }];
+  
+  // Handover 1,000 pcs at ₹500/pc = ₹500,000 inventory value handed over
+  const stockTransfers = [
+    { destination_party_id: 'p-stockonly', quantity: 1000, valuation_rate: 500, transfer_type: 'handover', status: 'completed' }
+  ];
+  
+  // Notice: In the financial money ledger, no sales invoice or financial debt was recorded
+  const sales = [];
+  const payments = [];
+
+  const overview = calculatePartyPaymentOverview(parties, states, sales, payments);
+  const p = overview.parties[0];
+  
+  assert.strictEqual(p.outstanding_amount, 0, 'Stock transfer must NEVER create financial outstanding');
+  assert.strictEqual(p.total_obligations, 0, 'Stock transfer is not a financial obligation');
+  assert.strictEqual(p.status, 'no_transactions');
+  assert.strictEqual(overview.summary.totalOutstanding, 0);
+});
+
+// ====================================================
+// TEST 56: Payment updates party details, state summary, mini-dashboard, and Main Dashboard without double counting
+// ====================================================
+runTest('56. Party Payment Status: Payment updates party details, state summary, and Main Dashboard without double counting', () => {
+  const states = [{ id: 'st-raj', name: 'Rajasthan' }];
+  const parties = [{ id: 'p-pay', name: 'Bikaner Gems', state_id: 'st-raj', opening_balance: 0, is_archived: false }];
+  
+  // Original sale invoice of 100,000 with 0 initial payment
+  const sales = [
+    { id: 'sale-100', party_id: 'p-pay', grand_total: 100000, amount_received: 0, amount_due: 100000, status: 'completed', sale_date: '2026-03-01' }
+  ];
+  const initialOverview = calculatePartyPaymentOverview(parties, states, sales, []);
+  assert.strictEqual(initialOverview.parties[0].outstanding_amount, 100000);
+  assert.strictEqual(initialOverview.parties[0].status, 'due');
+
+  // Customer makes a direct payment of 40,000
+  const payments = [
+    { id: 'pay-1', party_id: 'p-pay', amount: 40000, payment_type: 'received', payment_date: '2026-03-10' }
+  ];
+
+  const updatedOverview = calculatePartyPaymentOverview(parties, states, sales, payments);
+  const updatedParty = updatedOverview.parties[0];
+  
+  // Party details updated
+  assert.strictEqual(updatedParty.total_received, 40000);
+  assert.strictEqual(updatedParty.outstanding_amount, 60000);
+  assert.strictEqual(updatedParty.status, 'partial');
+  assert.strictEqual(updatedParty.last_payment_amount, 40000);
+  assert.strictEqual(updatedParty.last_payment_date, '2026-03-10');
+
+  // Mini-dashboard / summary updated
+  assert.strictEqual(updatedOverview.summary.totalPaymentsReceived, 40000);
+  assert.strictEqual(updatedOverview.summary.totalOutstanding, 60000);
+
+  // Main Dashboard Cash Receipts ledger integration:
+  // Authoritative cash receipt = sum(sales amount_received) + sum(direct payments received)
+  const mainDashboardCashReceipts = sales.reduce((s, x) => s + (x.amount_received || 0), 0) +
+    payments.filter(p => p.payment_type === 'received').reduce((s, p) => s + p.amount, 0);
+  assert.strictEqual(mainDashboardCashReceipts, 40000, 'Main Dashboard records exactly 40,000 with zero double counting');
+});
+
+// ====================================================
+// TEST 57: Search, state filter, status filter, and date filters produce correct filtered party list
+// ====================================================
+runTest('57. Party Payment Status: Search, state filter, status filter, and date filters work accurately', () => {
+  const states = [
+    { id: 'st-raj', name: 'Rajasthan' },
+    { id: 'st-ker', name: 'Kerala' },
+    { id: 'st-goa', name: 'Goa' }
+  ];
+  const parties = [
+    { id: 'p1', name: 'Jaipur Crafts', state_id: 'st-raj', phone: '9829011111', is_archived: false },
+    { id: 'p2', name: 'Kochi Gold', state_id: 'st-ker', phone: '9847022222', is_archived: false },
+    { id: 'p3', name: 'Goa Silvers', state_id: 'st-goa', phone: '9822033333', is_archived: false }
+  ];
+  const sales = [
+    { id: 's1', party_id: 'p1', grand_total: 50000, amount_received: 0, amount_due: 50000, status: 'completed', sale_date: '2026-03-01' },
+    { id: 's2', party_id: 'p2', grand_total: 30000, amount_received: 10000, amount_due: 20000, status: 'completed', sale_date: '2026-03-15' },
+    { id: 's3', party_id: 'p3', grand_total: 20000, amount_received: 20000, amount_due: 0, status: 'completed', sale_date: '2026-03-20' }
+  ];
+  const payments = [];
+
+  // Filter by state
+  const rajOnly = calculatePartyPaymentOverview(parties, states, sales, payments, { state_id: 'st-raj' });
+  assert.strictEqual(rajOnly.parties.length, 1);
+  assert.strictEqual(rajOnly.parties[0].party_name, 'Jaipur Crafts');
+
+  // Filter by status 'partial'
+  const partialOnly = calculatePartyPaymentOverview(parties, states, sales, payments, { status: 'partial' });
+  assert.strictEqual(partialOnly.parties.length, 1);
+  assert.strictEqual(partialOnly.parties[0].party_name, 'Kochi Gold');
+
+  // Search by query (phone)
+  const phoneSearch = calculatePartyPaymentOverview(parties, states, sales, payments, { searchQuery: '9822033333' });
+  assert.strictEqual(phoneSearch.parties.length, 1);
+  assert.strictEqual(phoneSearch.parties[0].party_name, 'Goa Silvers');
+
+  // Date filter (endDate cut-off at 2026-03-10: s2 and s3 are excluded)
+  const dateCutoff = calculatePartyPaymentOverview(parties, states, sales, payments, { endDate: '2026-03-10' });
+  const p2AtCutoff = dateCutoff.parties.find(p => p.party_id === 'p2');
+  assert.strictEqual(p2AtCutoff.total_obligations, 0);
+  assert.strictEqual(p2AtCutoff.status, 'no_transactions');
+});
+
+// ====================================================
+// TEST 58: Data persistence and recalculation after refresh
+// ====================================================
+runTest('58. Party Payment Status: Recalculation after storage/page refresh produces authoritative figures', () => {
+  const originalState = {
+    states: [{ id: 'st-1', name: 'Rajasthan' }],
+    parties: [
+      { id: 'pt-1', name: 'Royal Jewellers', state_id: 'st-1', opening_balance: 10000, is_archived: false }
+    ],
+    sales: [
+      { id: 'sl-1', party_id: 'pt-1', grand_total: 75000, amount_received: 25000, amount_due: 50000, status: 'completed', sale_date: '2026-03-01' }
+    ],
+    party_payments: [
+      { id: 'pp-1', party_id: 'pt-1', amount: 35000, payment_type: 'received', payment_date: '2026-03-08' }
+    ]
+  };
+
+  // Simulate serializing to persistent storage (JSON stringify) and reloading
+  const serialized = JSON.stringify(originalState);
+  const reloaded = JSON.parse(serialized);
+
+  const overview = calculatePartyPaymentOverview(
+    reloaded.parties,
+    reloaded.states,
+    reloaded.sales,
+    reloaded.party_payments
+  );
+
+  // Opening balance 10,000 + Sale 75,000 = 85,000 total obligations
+  // Payments: 25,000 (sale initial) + 35,000 (direct) = 60,000 total received
+  // Net remaining: 85,000 - 60,000 = 25,000 outstanding
+  const party = overview.parties[0];
+  assert.strictEqual(party.total_obligations, 85000);
+  assert.strictEqual(party.total_received, 60000);
+  assert.strictEqual(party.outstanding_amount, 25000);
+  assert.strictEqual(party.status, 'partial');
+  assert.strictEqual(overview.summary.totalOutstanding, 25000);
+  assert.strictEqual(overview.summary.totalPaymentsReceived, 60000);
+});
+
 console.log(`\n====================================================`);
 console.log(`🎉 TEST SUMMARY: ${passedTests}/${totalTests} TESTS PASSED`);
 console.log(`====================================================`);
