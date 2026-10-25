@@ -44,11 +44,21 @@ const MainAppContent: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#0B1220] text-[#F5F3EE] flex flex-col antialiased">
+    <div className="min-h-screen bg-transparent text-[#F5F3EE] flex flex-col antialiased relative">
+      {/* Fixed Luxury Wallpaper Background Layer across entire ERP */}
+      <div
+        className="fixed inset-0 pointer-events-none z-0 bg-cover bg-no-repeat bg-top no-print"
+        style={{
+          backgroundImage: "url('/luxury-wallpaper.png')",
+          backgroundPosition: "center top"
+        }}
+        aria-hidden="true"
+      />
+
       {/* Network offline warning */}
       <OfflineBanner />
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative z-10">
         {/* Left Sidebar */}
         <Sidebar
           activeTab={activeTab}
@@ -58,7 +68,7 @@ const MainAppContent: React.FC = () => {
         />
 
         {/* Main Content Area */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto bg-gradient-to-b from-[#070C16] via-[#0B1220] to-[#070C16] relative">
+        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto bg-transparent relative">
           {/* Top Header */}
           <Header
             activeTab={activeTab}
@@ -67,7 +77,7 @@ const MainAppContent: React.FC = () => {
           />
 
           {/* 5 Core Features + Settings & Backup */}
-          <main className="flex-1 px-4 lg:px-8 py-6 pb-24 lg:pb-6 max-w-7xl w-full mx-auto">
+          <main className="flex-1 px-4 lg:px-8 py-6 pb-24 lg:pb-6 max-w-7xl w-full mx-auto relative z-10">
             {activeTab === 'dashboard' && (
               <DashboardView
                 setActiveTab={setActiveTab}

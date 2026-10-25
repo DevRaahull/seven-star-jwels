@@ -25,9 +25,7 @@ import { ActiveNavTab, Sale, Purchase } from '../../types';
 import {
   SolitaireDiamondRing,
   GoldBullionBars,
-  SparklingDiamonds,
-  RoyalBridalNecklaceDrape,
-  IntertwinedWeddingBands
+  SparklingDiamonds
 } from '../common/JewelleryAssets';
 
 interface DashboardViewProps {
@@ -47,11 +45,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="space-y-6 pb-12 relative">
-      {/* Decorative Royal Bridal Necklace Drape (Top-Right Atmospheric Accent) */}
-      <div className="absolute -top-12 -right-8 w-72 h-[420px] pointer-events-none opacity-35 hidden 2xl:block overflow-hidden">
-        <RoyalBridalNecklaceDrape />
-      </div>
-
       {/* Top Welcome & Quick Actions */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative z-10">
         <div>
@@ -467,11 +460,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <span className="text-[#7A8699]">Valuation Method:</span>
             <p className="font-medium text-emerald-400 mt-1">Purchase Cost</p>
           </div>
-        </div>
-
-        {/* Decorative Intertwined Wedding Bands (Bottom-Right Accent) */}
-        <div className="absolute -bottom-6 -right-6 pointer-events-none opacity-25 hidden xl:block">
-          <IntertwinedWeddingBands />
         </div>
       </div>
     </div>

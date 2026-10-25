@@ -13,7 +13,6 @@ import {
 } from 'lucide-react';
 import { ActiveNavTab } from '../../types';
 import { GoldLogo } from '../common/GoldLogo';
-import { PaisleyGoldWatermark } from '../common/JewelleryAssets';
 
 interface SidebarProps {
   activeTab: ActiveNavTab;
@@ -43,7 +42,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const sidebarContent = (
-    <div className="flex flex-col h-full bg-[#070C16] border-r border-[#1E2B45]/80 text-[#AAB4C5] select-none relative overflow-hidden">
+    <div className="flex flex-col h-full bg-[#070C16]/80 backdrop-blur-md border-r border-[#1E2B45]/80 text-[#AAB4C5] select-none relative overflow-hidden">
       {/* Top Brand Block */}
       <div className="pt-7 pb-5 px-6 flex flex-col items-center border-b border-[#1E2B45]/70 text-center relative">
         <button
@@ -94,11 +93,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           );
         })}
       </nav>
-
-      {/* Bottom Subtle Paisley Watermark */}
-      <div className="absolute -bottom-6 -left-6 pointer-events-none opacity-15">
-        <PaisleyGoldWatermark size={140} />
-      </div>
 
       {/* Bottom Brand Motto */}
       <div className="p-4 border-t border-[#1E2B45]/70 text-center flex flex-col items-center relative z-10 bg-[#070C16]/60 backdrop-blur-sm">
