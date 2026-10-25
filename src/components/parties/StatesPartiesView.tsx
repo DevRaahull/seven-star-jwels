@@ -267,16 +267,25 @@ export const StatesPartiesView: React.FC = () => {
       return true;
     });
 
-    // 3. Handed over to state heads
+    // 3. Handed over to state heads (Net active stock handed over from owner to state heads)
     let totalHandedOverToStateHeads = 0;
+    let totalReturnedToOwner = 0;
     filteredTransfers.forEach(t => {
-      if ((t.transfer_type === 'handover' || t.transfer_type === 'issue') && (!t.source_party_id || t.transfer_level === 'owner_to_party')) {
+      const isReturnToOwner =
+        t.transfer_level === 'party_to_owner' ||
+        t.destination_party_id === 'owner' ||
+        (t.transfer_type === 'return' && (!t.source_party_id || t.source_party_id === t.destination_party_id));
+
+      if (isReturnToOwner) {
+        totalReturnedToOwner += t.quantity;
+      } else if ((t.transfer_type === 'handover' || t.transfer_type === 'issue') && (!t.source_party_id || t.transfer_level === 'owner_to_party')) {
         const destParty = activeParties.find(p => p.id === t.destination_party_id);
-        if (!destParty || destParty.party_type === 'state_head' || !destParty.party_type) {
+        if (destParty && (destParty.party_type === 'state_head' || !destParty.party_type)) {
           totalHandedOverToStateHeads += t.quantity;
         }
       }
     });
+    totalHandedOverToStateHeads = Math.max(0, totalHandedOverToStateHeads - totalReturnedToOwner);
 
     // 4 & 5. Held stock by state heads and distributors
     let stateHeadsHeldStock = 0;

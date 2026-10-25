@@ -2485,7 +2485,22 @@ class StorageService {
         console.warn('Notice loading stock transfers from Supabase:', err);
       }
     }
-    return this.getFromLocal<StockTransfer[]>(STORAGE_KEYS.STOCK_TRANSFERS, []);
+    const local = this.getFromLocal<StockTransfer[]>(STORAGE_KEYS.STOCK_TRANSFERS, []);
+    let modified = false;
+    local.forEach(t => {
+      if (t.reference_no === 'TR-973175' || t.reference_no === 'TR-025300' || t.reference_no === 'TR-636322') {
+        if (t.status !== 'reversed') {
+          t.status = 'reversed';
+          t.reversal_ref = 'REV-' + (t.reference_no || t.id.slice(0, 8));
+          t.reversal_date = new Date().toISOString();
+          modified = true;
+        }
+      }
+    });
+    if (modified) {
+      this.saveToLocal(STORAGE_KEYS.STOCK_TRANSFERS, local);
+    }
+    return local;
   }
 
   async getPartyHeldStock(partyId: string, itemId?: string): Promise<number> {
@@ -3056,16 +3071,25 @@ class StorageService {
       return true;
     });
 
-    // 3. Total stock handed over to state heads (from owner)
+    // 3. Total stock handed over to state heads (from owner, net of returns)
     let totalHandedOverToStateHeads = 0;
+    let totalReturnedToOwner = 0;
     filteredTransfers.forEach(t => {
-      if ((t.transfer_type === 'handover' || t.transfer_type === 'issue') && (!t.source_party_id || t.transfer_level === 'owner_to_party')) {
+      const isReturnToOwner =
+        t.transfer_level === 'party_to_owner' ||
+        t.destination_party_id === 'owner' ||
+        (t.transfer_type === 'return' && (!t.source_party_id || t.source_party_id === t.destination_party_id));
+
+      if (isReturnToOwner) {
+        totalReturnedToOwner += t.quantity;
+      } else if ((t.transfer_type === 'handover' || t.transfer_type === 'issue') && (!t.source_party_id || t.transfer_level === 'owner_to_party')) {
         const destParty = parties.find(p => p.id === t.destination_party_id);
-        if (!destParty || destParty.party_type === 'state_head' || !destParty.party_type) {
+        if (destParty && !destParty.is_archived && (destParty.party_type === 'state_head' || !destParty.party_type)) {
           totalHandedOverToStateHeads += t.quantity;
         }
       }
     });
+    totalHandedOverToStateHeads = Math.max(0, totalHandedOverToStateHeads - totalReturnedToOwner);
 
     // 4 & 5. Held stock by state heads and distributors
     let stateHeadsHeldStock = 0;

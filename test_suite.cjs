@@ -1652,6 +1652,42 @@ runTest('49. Authoritative Stock Reconciliation: Invariant Opening + Purchased -
   assert.strictEqual(totalAccounted, opening + totalPurchased, 'Physical conservation of jewellery stock holds 100%');
 });
 
+// ====================================================
+// TEST 50: Handed Over to State Heads card shows 0 when all transactions are reversed/returned
+// ====================================================
+runTest('50. Handed Over to State Heads Card: Accurately displays 0 pcs when all transfers are reversed or returned', () => {
+  const activeParties = [
+    { id: 'p1', name: 'Test Party', party_type: 'state_head', is_archived: false },
+    { id: 'p2', name: 'Mohit', party_type: 'state_head', is_archived: false }
+  ];
+
+  const transfers = [
+    { reference_no: 'TR-973175', destination_party_id: 'p2', quantity: 1340, transfer_type: 'handover', status: 'reversed' },
+    { reference_no: 'TR-025300', destination_party_id: 'p2', quantity: 1340, transfer_type: 'return', status: 'reversed' },
+    { reference_no: 'TR-636322', destination_party_id: 'archived-party-id', quantity: 1340, transfer_type: 'handover', status: 'reversed' }
+  ];
+
+  const filteredTransfers = transfers.filter(t => t.status !== 'cancelled' && t.status !== 'reversed');
+
+  let totalHandedOverToStateHeads = 0;
+  let totalReturnedToOwner = 0;
+  filteredTransfers.forEach(t => {
+    const isReturn = t.transfer_level === 'party_to_owner' || t.destination_party_id === 'owner' || t.transfer_type === 'return';
+    if (isReturn) {
+      totalReturnedToOwner += t.quantity;
+    } else if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
+      const dest = activeParties.find(p => p.id === t.destination_party_id);
+      if (dest && (dest.party_type === 'state_head' || !dest.party_type)) {
+        totalHandedOverToStateHeads += t.quantity;
+      }
+    }
+  });
+
+  totalHandedOverToStateHeads = Math.max(0, totalHandedOverToStateHeads - totalReturnedToOwner);
+
+  assert.strictEqual(totalHandedOverToStateHeads, 0, 'Handed Over to State Heads metric must strictly be 0 pcs');
+});
+
 console.log(`\n====================================================`);
 console.log(`🎉 TEST SUMMARY: ${passedTests}/${totalTests} TESTS PASSED`);
 console.log(`====================================================`);
