@@ -26,15 +26,20 @@ export const Header: React.FC<HeaderProps> = ({ setActiveTab, toggleMobileNav })
     <header className="relative bg-[#070C16]/90 backdrop-blur-md border-b border-[#1E2B45]/80 px-4 lg:px-8 py-3.5 z-30 shadow-[0_4px_20px_rgba(0,0,0,0.4)]">
       <div className="flex items-center justify-between">
         {/* Mobile Hamburger & Logo preview */}
-        <div className="flex items-center gap-3 lg:hidden">
+        <div className="flex items-center gap-2.5 lg:hidden">
           <button
             onClick={toggleMobileNav}
-            className="p-2 text-[#AAB4C5] hover:text-[#D6B36A] hover:bg-[#16233B] rounded-lg transition"
+            className="p-1.5 text-[#AAB4C5] hover:text-[#D6B36A] hover:bg-[#16233B] rounded-lg transition shrink-0"
             aria-label="Toggle navigation"
           >
             <Menu size={22} />
           </button>
-          <span className="font-serif font-bold text-sm text-[#D6B36A] tracking-wider">SEVEN STAR</span>
+          <div className="flex flex-col text-left">
+            <span className="text-[9px] text-[#D6B36A] tracking-[0.2em] font-serif leading-none">॥ श्री ॥</span>
+            <span className="font-serif font-bold text-xs sm:text-sm text-gold-gradient tracking-wider uppercase leading-tight mt-0.5">
+              SEVEN STAR JEWELS
+            </span>
+          </div>
         </div>
 
         {/* Center: ॥ श्री ॥ and SEVEN STAR JEWELS */}
@@ -60,7 +65,7 @@ export const Header: React.FC<HeaderProps> = ({ setActiveTab, toggleMobileNav })
         </div>
 
         {/* Right Section: Date/Day & Profile/Settings icons */}
-        <div className="flex items-center gap-3 ml-auto">
+        <div className="flex items-center gap-2 sm:gap-3 ml-auto">
           {/* Network status badge if offline */}
           {!isOnline && (
             <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/30 rounded-full text-xs text-amber-400">

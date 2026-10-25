@@ -3,7 +3,7 @@ import { ShieldCheck, Heart } from 'lucide-react';
 
 export const Footer: React.FC = () => {
   return (
-    <footer className="w-full mt-auto border-t border-[#1E2B45]/80 bg-[#0B1220]/90 backdrop-blur-md text-[#AAB4C5] py-6 px-4 no-print select-none">
+    <footer className="w-full mt-auto border-t border-[#1E2B45]/80 bg-[#070C16]/80 backdrop-blur-md text-[#AAB4C5] py-6 pb-20 lg:pb-6 px-4 no-print select-none">
       <div className="max-w-7xl mx-auto flex flex-col items-center justify-center text-center space-y-3">
         {/* Subtle Gold Filigree Divider */}
         <div className="flex items-center gap-3 text-[#D6B36A]/50">

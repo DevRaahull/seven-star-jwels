@@ -5,7 +5,7 @@
 @layer base {
   body {
     background-color: #070B14;
-    background-image: url('/luxury-wallpaper.png');
+    background-image: url('/luxury-wallpaper-mobile.png');
     background-size: cover;
     background-position: center top;
     background-attachment: fixed;
@@ -13,6 +13,12 @@
     color: #F5F3EE;
     font-family: 'Plus Jakarta Sans', Inter, system-ui, sans-serif;
     min-height: 100vh;
+  }
+
+  @media (min-width: 768px) {
+    body {
+      background-image: url('/luxury-wallpaper.png');
+    }
   }
 
   /* Midnight Ledger custom scrollbars */

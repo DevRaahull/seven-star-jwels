@@ -46,8 +46,18 @@ const MainAppContent: React.FC = () => {
   return (
     <div className="min-h-screen bg-transparent text-[#F5F3EE] flex flex-col antialiased relative">
       {/* Fixed Luxury Wallpaper Background Layer across entire ERP */}
+      {/* Mobile 9:16 Portrait luxury wallpaper */}
       <div
-        className="fixed inset-0 pointer-events-none z-0 bg-cover bg-no-repeat bg-top no-print"
+        className="fixed inset-0 pointer-events-none z-0 bg-cover bg-no-repeat bg-top no-print md:hidden"
+        style={{
+          backgroundImage: "url('/luxury-wallpaper-mobile.png')",
+          backgroundPosition: "center top"
+        }}
+        aria-hidden="true"
+      />
+      {/* Desktop 16:9 Landscape luxury wallpaper */}
+      <div
+        className="fixed inset-0 pointer-events-none z-0 bg-cover bg-no-repeat bg-top no-print hidden md:block"
         style={{
           backgroundImage: "url('/luxury-wallpaper.png')",
           backgroundPosition: "center top"
