@@ -4,6 +4,7 @@ import { AppDataProvider } from './context/AppDataContext';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { BottomNav } from './components/layout/BottomNav';
+import { Footer } from './components/layout/Footer';
 import { OfflineBanner } from './components/layout/OfflineBanner';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { PurchaseEntryView } from './components/purchases/PurchaseEntryView';
@@ -57,7 +58,7 @@ const MainAppContent: React.FC = () => {
         />
 
         {/* Main Content Area */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
+        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto bg-gradient-to-b from-[#070C16] via-[#0B1220] to-[#070C16] relative">
           {/* Top Header */}
           <Header
             activeTab={activeTab}
@@ -106,6 +107,9 @@ const MainAppContent: React.FC = () => {
               <SettingsView />
             )}
           </main>
+
+          {/* Luxury ERP Footer (Developed and Maintained by Rahul Soni) */}
+          <Footer />
         </div>
       </div>
 

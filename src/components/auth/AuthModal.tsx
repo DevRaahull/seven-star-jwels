@@ -40,18 +40,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0B1220] bg-opacity-95 backdrop-blur-md">
-      <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl w-full max-w-md p-8 shadow-2xl space-y-6 relative animate-in fade-in zoom-in-95">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#070C16]/95 backdrop-blur-md">
+      <div className="bg-gradient-to-b from-[#111B2E] via-[#0E1729] to-[#070C16] border border-[#D6B36A]/30 rounded-2xl w-full max-w-md p-8 shadow-[0_16px_50px_rgba(0,0,0,0.8)] space-y-6 relative animate-in fade-in zoom-in-95">
         {/* Brand Header */}
         <div className="text-center space-y-2">
-          <div className="text-xs font-serif font-bold text-[#D6B36A] tracking-[0.2em]">
+          <div className="text-xs font-serif font-bold text-[#D6B36A] tracking-[0.25em]">
             ॥ श्री ॥
           </div>
-          <div className="flex justify-center mb-1">
-            <GoldLogo size={48} />
+          <div className="flex justify-center mb-1 drop-shadow-[0_0_12px_rgba(214,179,106,0.35)]">
+            <GoldLogo size={52} />
           </div>
-          <h2 className="font-serif font-bold text-xl text-[#F5F3EE] tracking-[0.15em] uppercase">
-            SEVEN STAR JWELS
+          <h2 className="font-serif font-bold text-xl text-gold-gradient tracking-[0.2em] uppercase">
+            SEVEN STAR JEWELS
           </h2>
           <p className="text-xs text-[#AAB4C5]">
             Authorized Jewellery Business Owner Portal
@@ -103,14 +103,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full py-3 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] font-bold rounded-xl text-xs shadow-md transition active:scale-95 disabled:opacity-50 mt-2"
+            className="w-full py-3 bg-gradient-to-r from-[#F5E6B3] via-[#D6B36A] to-[#B08E46] text-[#070B14] font-bold rounded-xl text-xs shadow-[0_0_20px_rgba(214,179,106,0.35)] hover:brightness-110 transition active:scale-95 disabled:opacity-50 mt-2"
           >
             {isSubmitting ? 'Verifying Credentials...' : 'Sign In to Business Portal'}
           </button>
         </form>
 
         <div className="pt-2 text-center text-[11px] text-[#7A8699]">
-          <p>Protected Business Management System • SEVEN STAR JWELS</p>
+          <p>Protected Business Management System • SEVEN STAR JEWELS</p>
         </div>
       </div>
     </div>

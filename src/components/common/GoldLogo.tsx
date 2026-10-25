@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 
 interface GoldLogoProps {
   size?: number;
@@ -17,9 +17,10 @@ export const GoldLogo: React.FC<GoldLogoProps> = ({ size = 44, className = '' })
     >
       <defs>
         <linearGradient id="goldPetalGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#FCEFC7" />
-          <stop offset="40%" stop-color="#D6B36A" />
-          <stop offset="100%" stop-color="#9E7C35" />
+          <stop offset="0%" stopColor="#FFF2D6" />
+          <stop offset="35%" stopColor="#E6CA85" />
+          <stop offset="70%" stopColor="#D6B36A" />
+          <stop offset="100%" stopColor="#9E7C35" />
         </linearGradient>
       </defs>
       <g transform="translate(50,50)">

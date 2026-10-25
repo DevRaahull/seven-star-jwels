@@ -25,7 +25,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, setActiveTab })
   ];
 
   return (
-    <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0B1220]/95 backdrop-blur border-t border-[#1E2B45] px-1 py-1.5 shadow-2xl safe-area-bottom">
+    <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#070C16]/95 backdrop-blur-md border-t border-[#1E2B45]/80 px-1 py-1 shadow-[0_-8px_30px_rgba(0,0,0,0.6)] safe-area-bottom">
       <div className="flex items-center justify-around">
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -39,20 +39,23 @@ export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, setActiveTab })
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`flex flex-col items-center justify-center flex-1 py-1.5 px-1 rounded-xl transition-all select-none min-h-[48px] ${
+              className={`flex flex-col items-center justify-center flex-1 py-1.5 px-1 rounded-xl transition-all duration-200 select-none min-h-[48px] relative ${
                 isActive
-                  ? 'text-[#D6B36A] font-semibold'
+                  ? 'text-[#F5F3EE]'
                   : 'text-[#8A95A8] hover:text-[#F5F3EE]'
               }`}
             >
+              {isActive && (
+                <span className="absolute top-0 w-8 h-[2px] bg-gradient-to-r from-transparent via-[#D6B36A] to-transparent rounded-full shadow-[0_0_8px_#D6B36A]" />
+              )}
               <div
                 className={`p-1 rounded-lg transition-transform ${
-                  isActive ? 'bg-[#D6B36A]/15 scale-110' : ''
+                  isActive ? 'bg-[#D6B36A]/20 text-[#D6B36A] scale-105' : ''
                 }`}
               >
-                <Icon size={20} />
+                <Icon size={19} />
               </div>
-              <span className="text-[10px] tracking-tight mt-0.5 font-medium">
+              <span className={`text-[10px] tracking-tight mt-0.5 ${isActive ? 'text-[#D6B36A] font-semibold' : 'font-medium'}`}>
                 {item.label}
               </span>
             </button>

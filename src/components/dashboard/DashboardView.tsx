@@ -12,11 +12,23 @@ import {
   Wallet,
   Layers,
   ShieldCheck,
-  ChevronRight
+  ChevronRight,
+  Handshake,
+  Coins,
+  Scale,
+  CornerUpRight,
+  Users
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext';
 import { formatCurrency, formatDate } from '../../lib/formatters';
 import { ActiveNavTab, Sale, Purchase } from '../../types';
+import {
+  SolitaireDiamondRing,
+  GoldBullionBars,
+  SparklingDiamonds,
+  RoyalBridalNecklaceDrape,
+  IntertwinedWeddingBands
+} from '../common/JewelleryAssets';
 
 interface DashboardViewProps {
   setActiveTab: (tab: ActiveNavTab) => void;
@@ -34,148 +46,200 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const activeItems = items.filter(i => !i.is_archived);
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="space-y-6 pb-12 relative">
+      {/* Decorative Royal Bridal Necklace Drape (Top-Right Atmospheric Accent) */}
+      <div className="absolute -top-12 -right-8 w-72 h-[420px] pointer-events-none opacity-35 hidden 2xl:block overflow-hidden">
+        <RoyalBridalNecklaceDrape />
+      </div>
+
       {/* Top Welcome & Quick Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative z-10">
         <div>
-          <h2 className="text-xl lg:text-2xl font-serif font-bold text-gold-gradient tracking-wide">
+          <h2 className="text-xl sm:text-2xl lg:text-3xl font-serif font-bold text-gold-gradient tracking-wide uppercase drop-shadow-sm">
             Wholesale Jewellery Dashboard
           </h2>
-          <p className="text-xs text-[#AAB4C5] mt-0.5">
+          <p className="text-xs sm:text-sm text-[#AAB4C5] mt-1 font-light">
             Real-time summary of sales, stock inward, inventory, and net business result.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-3">
           <button
             onClick={() => setActiveTab('create_purchase')}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-[#16233B] hover:bg-[#1E2E4A] border border-[#1E2B45] text-[#D6B36A] rounded-lg text-xs font-semibold shadow transition active:scale-95"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[#D6B36A]/40 bg-[#111B2E]/90 hover:bg-[#16233B] hover:border-[#D6B36A] text-[#F5F3EE] text-xs font-semibold shadow-sm transition active:scale-95 duration-150"
           >
-            <Plus size={15} />
-            <span>New Purchase</span>
+            <Plus size={16} className="text-[#D6B36A]" />
+            <span>+ New Purchase</span>
           </button>
 
           <button
             onClick={() => setActiveTab('create_sale')}
-            className="flex items-center gap-1.5 px-4 py-2 bg-[#D6B36A] hover:bg-[#c9a356] text-[#0B1220] rounded-lg text-xs font-bold shadow transition active:scale-95"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#F5E6B3] via-[#D6B36A] to-[#B08E46] text-[#070B14] hover:brightness-110 text-xs font-bold shadow-[0_0_20px_rgba(214,179,106,0.35)] transition active:scale-95 duration-150"
           >
-            <Plus size={15} strokeWidth={2.5} />
-            <span>New Sale (Bill)</span>
+            <Plus size={16} strokeWidth={2.5} />
+            <span>+ New Sale (Bill)</span>
           </button>
         </div>
       </div>
 
-      {/* Exactly 6 Essential Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      {/* Exactly 6 Essential Cards (Matching Luxury Concept Mockup) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 relative z-10">
         {/* 1. This Month's Sales */}
-        <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 shadow-sm hover:border-[#2A3B5E] transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#AAB4C5] font-medium">This Month&apos;s Sales</span>
-            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20">
-              <TrendingUp size={16} />
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-b from-[#111B2E]/95 via-[#0E1729]/95 to-[#070C16] border border-[#D6B36A]/20 hover:border-[#D6B36A]/50 p-5 shadow-[0_8px_30px_rgba(0,0,0,0.5)] hover:shadow-[0_8px_30px_rgba(214,179,106,0.12)] transition-all duration-300 group">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-amber-500/10 text-[#D6B36A] border border-[#D6B36A]/25">
+              <TrendingUp size={18} />
             </div>
+            <span className="text-xs font-medium text-[#AAB4C5] tracking-wide">
+              This Month&apos;s Sales
+            </span>
           </div>
-          <p className="text-xl font-bold font-mono text-[#F5F3EE] mt-2">
-            {formatCurrency(stats.month_sales)}
-          </p>
-          <span className="text-[11px] text-[#7A8699] mt-0.5 block">
-            Gross wholesale sales with GST
-          </span>
+
+          <div className="relative mt-3 z-10">
+            <p className="text-2xl sm:text-3xl font-bold font-mono text-[#F5F3EE] tracking-tight">
+              {formatCurrency(stats.month_sales)}
+            </p>
+            <span className="text-[11px] text-[#7A8699] mt-1 block">
+              Gross wholesale sales with GST
+            </span>
+          </div>
+
+          {/* Decorative Solitaire Ring Floating Asset */}
+          <div className="absolute right-2 bottom-2 pointer-events-none opacity-85 group-hover:scale-105 group-hover:opacity-100 transition-all duration-300">
+            <SolitaireDiamondRing size={72} />
+          </div>
         </div>
 
         {/* 2. This Month's Purchases */}
-        <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 shadow-sm hover:border-[#2A3B5E] transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#AAB4C5] font-medium">This Month&apos;s Purchases</span>
-            <div className="p-2 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/20">
-              <ShoppingBag size={16} />
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-b from-[#111B2E]/95 via-[#0E1729]/95 to-[#070C16] border border-[#D6B36A]/20 hover:border-[#D6B36A]/50 p-5 shadow-[0_8px_30px_rgba(0,0,0,0.5)] hover:shadow-[0_8px_30px_rgba(214,179,106,0.12)] transition-all duration-300 group">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-[#D6B36A]/10 text-[#D6B36A] border border-[#D6B36A]/25">
+              <ShoppingBag size={18} />
             </div>
+            <span className="text-xs font-medium text-[#AAB4C5] tracking-wide">
+              This Month&apos;s Purchases
+            </span>
           </div>
-          <p className="text-xl font-bold font-mono text-[#F5F3EE] mt-2">
-            {formatCurrency(stats.month_purchases)}
-          </p>
-          <span className="text-[11px] text-[#7A8699] mt-0.5 block">
-            Stock inward from suppliers
-          </span>
+
+          <div className="relative mt-3 z-10">
+            <p className="text-2xl sm:text-3xl font-bold font-mono text-[#F5F3EE] tracking-tight">
+              {formatCurrency(stats.month_purchases)}
+            </p>
+            <span className="text-[11px] text-[#7A8699] mt-1 block">
+              Stock inward from suppliers
+            </span>
+          </div>
+
+          {/* Decorative Gold Bullion Bars Floating Asset */}
+          <div className="absolute right-2 bottom-2 pointer-events-none opacity-85 group-hover:scale-105 group-hover:opacity-100 transition-all duration-300">
+            <GoldBullionBars size={72} />
+          </div>
         </div>
 
         {/* 3. Current Stock Summary */}
-        <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 shadow-sm hover:border-[#2A3B5E] transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#AAB4C5] font-medium">Current Stock Summary</span>
-            <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              <Boxes size={16} />
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-b from-[#111B2E]/95 via-[#0E1729]/95 to-[#070C16] border border-[#D6B36A]/20 hover:border-[#D6B36A]/50 p-5 shadow-[0_8px_30px_rgba(0,0,0,0.5)] hover:shadow-[0_8px_30px_rgba(214,179,106,0.12)] transition-all duration-300 group">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-amber-500/10 text-[#D6B36A] border border-[#D6B36A]/25">
+              <Boxes size={18} />
             </div>
+            <span className="text-xs font-medium text-[#AAB4C5] tracking-wide">
+              Current Stock Summary
+            </span>
           </div>
-          <p className="text-xl font-bold font-mono text-[#D6B36A] mt-2">
-            {formatCurrency(stats.current_stock_value)}
-          </p>
-          <span className="text-[11px] text-[#AAB4C5] mt-0.5 block">
-            {stats.current_stock_units} total pieces in hand
-          </span>
+
+          <div className="relative mt-3 z-10">
+            <p className="text-2xl sm:text-3xl font-bold font-mono text-[#D6B36A] tracking-tight">
+              {formatCurrency(stats.current_stock_value)}
+            </p>
+            <span className="text-[11px] text-[#AAB4C5] mt-1 block">
+              {stats.current_stock_units} total pieces in hand
+            </span>
+          </div>
+
+          {/* Decorative Sparkling Diamonds Floating Asset */}
+          <div className="absolute right-2 bottom-2 pointer-events-none opacity-85 group-hover:scale-105 group-hover:opacity-100 transition-all duration-300">
+            <SparklingDiamonds size={72} />
+          </div>
         </div>
 
         {/* 4. This Month's Income */}
-        <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 shadow-sm hover:border-[#2A3B5E] transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#AAB4C5] font-medium">This Month&apos;s Income</span>
-            <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-              <ArrowUpRight size={16} />
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-b from-[#111B2E]/95 via-[#0E1729]/95 to-[#070C16] border border-[#D6B36A]/20 hover:border-[#D6B36A]/50 p-5 shadow-[0_8px_30px_rgba(0,0,0,0.5)] hover:shadow-[0_8px_30px_rgba(214,179,106,0.12)] transition-all duration-300">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/25">
+              <Coins size={18} />
             </div>
+            <span className="text-xs font-medium text-[#AAB4C5] tracking-wide">
+              This Month&apos;s Income
+            </span>
           </div>
-          <p className="text-xl font-bold font-mono text-[#F5F3EE] mt-2">
-            {formatCurrency(stats.month_income)}
-          </p>
-          <span className="text-[11px] text-[#7A8699] mt-0.5 block">
-            Taxable sales (excluding tax)
-          </span>
+
+          <div className="mt-3">
+            <p className="text-2xl sm:text-3xl font-bold font-mono text-[#F5F3EE] tracking-tight">
+              {formatCurrency(stats.month_income)}
+            </p>
+            <span className="text-[11px] text-[#7A8699] mt-1 block">
+              Taxable sales (excluding tax)
+            </span>
+          </div>
         </div>
 
         {/* 5. This Month's Expenditure */}
-        <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 shadow-sm hover:border-[#2A3B5E] transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#AAB4C5] font-medium">This Month&apos;s Expenditure</span>
-            <div className="p-2 rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/20">
-              <ArrowDownRight size={16} />
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-b from-[#111B2E]/95 via-[#0E1729]/95 to-[#070C16] border border-[#D6B36A]/20 hover:border-[#D6B36A]/50 p-5 shadow-[0_8px_30px_rgba(0,0,0,0.5)] hover:shadow-[0_8px_30px_rgba(214,179,106,0.12)] transition-all duration-300">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/25">
+              <ArrowDownRight size={18} />
             </div>
+            <span className="text-xs font-medium text-[#AAB4C5] tracking-wide">
+              This Month&apos;s Expenditure
+            </span>
           </div>
-          <p className="text-xl font-bold font-mono text-[#F5F3EE] mt-2">
-            {formatCurrency(stats.month_expenditure)}
-          </p>
-          <span className="text-[11px] text-[#7A8699] mt-0.5 block">
-            COGS of sold items + Operating costs
-          </span>
+
+          <div className="mt-3">
+            <p className="text-2xl sm:text-3xl font-bold font-mono text-[#F5F3EE] tracking-tight">
+              {formatCurrency(stats.month_expenditure)}
+            </p>
+            <span className="text-[11px] text-[#7A8699] mt-1 block">
+              COGS of sold items + Operating costs
+            </span>
+          </div>
         </div>
 
         {/* 6. This Month's Net Result */}
-        <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 shadow-sm hover:border-[#2A3B5E] transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#D6B36A] font-semibold">This Month&apos;s Net Result</span>
-            <div className="p-2 rounded-lg bg-[#D6B36A]/10 text-[#D6B36A] border border-[#D6B36A]/30">
-              <FileBarChart size={16} />
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-b from-[#111B2E]/95 via-[#0E1729]/95 to-[#070C16] border border-[#D6B36A]/20 hover:border-[#D6B36A]/50 p-5 shadow-[0_8px_30px_rgba(0,0,0,0.5)] hover:shadow-[0_8px_30px_rgba(214,179,106,0.12)] transition-all duration-300">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-[#D6B36A]/10 text-[#D6B36A] border border-[#D6B36A]/30">
+              <Scale size={18} />
             </div>
+            <span className="text-xs font-semibold text-[#D6B36A] tracking-wide">
+              This Month&apos;s Net Result
+            </span>
           </div>
-          <p className={`text-xl font-bold font-mono mt-2 ${stats.month_net_result >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {formatCurrency(stats.month_net_result)}
-          </p>
-          <span className="text-[11px] text-[#AAB4C5] mt-0.5 block">
-            Net operating profit for this month
-          </span>
+
+          <div className="mt-3">
+            <p className={`text-2xl sm:text-3xl font-bold font-mono tracking-tight ${stats.month_net_result >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {formatCurrency(stats.month_net_result)}
+            </p>
+            <span className="text-[11px] text-[#AAB4C5] mt-1 block">
+              Net operating profit for this month
+            </span>
+          </div>
         </div>
       </div>
 
       {/* Authoritative Financial Synchronization Bar: Cash Inflow & Collections */}
-      <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-4 shadow-sm hover:border-[#2A3B5E] transition">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#1E2B45]/70">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              <Wallet size={16} />
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-b from-[#111B2E]/90 via-[#0E1729]/95 to-[#070C16] border border-[#D6B36A]/25 p-5 shadow-[0_8px_30px_rgba(0,0,0,0.5)] transition hover:border-[#D6B36A]/45">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-[#1E2B45]/80">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-[#D6B36A]/15 border border-[#D6B36A]/40 flex items-center justify-center text-[#D6B36A] shrink-0">
+              <Handshake size={20} />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-semibold text-[#F5F3EE]">Cash Realization & Collections</span>
-                <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-medium text-emerald-400">
-                  <ShieldCheck size={11} />
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm sm:text-base font-bold text-[#F5F3EE]">
+                  Cash Realization & Collections
+                </span>
+                <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-medium text-emerald-400">
+                  <ShieldCheck size={12} />
                   Authoritative Ledger Synced
                 </span>
               </div>
@@ -187,53 +251,65 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           <button
             onClick={() => setActiveTab('states_parties')}
-            className="flex items-center gap-1 text-xs text-[#D6B36A] hover:underline font-medium self-start sm:self-auto"
+            className="flex items-center gap-1.5 text-xs text-[#D6B36A] hover:text-[#FFF0C7] font-semibold transition self-start sm:self-auto group"
           >
             <span>States & Parties Ledger</span>
-            <ChevronRight size={13} />
+            <ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform" />
           </button>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 text-xs">
-          <div className="p-2.5 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
-            <span className="text-[#7A8699] text-[11px]">This Month&apos;s Inflow:</span>
-            <p className="font-bold text-emerald-400 font-mono text-base mt-0.5">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 pt-4 text-xs">
+          <div className="p-3.5 bg-[#070C16]/80 border border-[#1E2B45]/80 hover:border-[#D6B36A]/30 rounded-xl transition flex flex-col justify-between">
+            <div className="flex items-center gap-2 text-[#7A8699] text-[11px]">
+              <CornerUpRight size={13} className="text-emerald-400" />
+              <span>This Month&apos;s Inflow</span>
+            </div>
+            <p className="font-bold text-emerald-400 font-mono text-lg sm:text-xl mt-1.5">
               {formatCurrency(stats.month_cash_received || 0)}
             </p>
-            <span className="text-[10px] text-[#7A8699]">Sales + party receipts</span>
+            <span className="text-[10px] text-[#7A8699] mt-0.5">Sales + party receipts</span>
           </div>
 
-          <div className="p-2.5 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
-            <span className="text-[#7A8699] text-[11px]">Total Cash Collected:</span>
-            <p className="font-bold text-[#F5F3EE] font-mono text-base mt-0.5">
+          <div className="p-3.5 bg-[#070C16]/80 border border-[#1E2B45]/80 hover:border-[#D6B36A]/30 rounded-xl transition flex flex-col justify-between">
+            <div className="flex items-center gap-2 text-[#7A8699] text-[11px]">
+              <Coins size={13} className="text-[#D6B36A]" />
+              <span>Total Cash Collected</span>
+            </div>
+            <p className="font-bold text-[#F5F3EE] font-mono text-lg sm:text-xl mt-1.5">
               {formatCurrency(stats.total_cash_received || 0)}
             </p>
-            <span className="text-[10px] text-[#7A8699]">All-time verified inflows</span>
+            <span className="text-[10px] text-[#7A8699] mt-0.5">All-time verified inflows</span>
           </div>
 
-          <div className="p-2.5 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
-            <span className="text-[#7A8699] text-[11px]">Party / State Receipts:</span>
-            <p className="font-bold text-[#D6B36A] font-mono text-base mt-0.5">
+          <div className="p-3.5 bg-[#070C16]/80 border border-[#1E2B45]/80 hover:border-[#D6B36A]/30 rounded-xl transition flex flex-col justify-between">
+            <div className="flex items-center gap-2 text-[#7A8699] text-[11px]">
+              <Users size={13} className="text-[#D6B36A]" />
+              <span>Party / State Receipts</span>
+            </div>
+            <p className="font-bold text-[#D6B36A] font-mono text-lg sm:text-xl mt-1.5">
               {formatCurrency(stats.party_payments_received_total || 0)}
             </p>
-            <span className="text-[10px] text-[#7A8699]">Synced from States & Parties</span>
+            <span className="text-[10px] text-[#7A8699] mt-0.5">Synced from States & Parties</span>
           </div>
 
-          <div className="p-2.5 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
-            <span className="text-[#7A8699] text-[11px]">Party Receivables:</span>
-            <p className="font-bold text-amber-400 font-mono text-base mt-0.5">
+          <div className="p-3.5 bg-[#070C16]/80 border border-[#1E2B45]/80 hover:border-[#D6B36A]/30 rounded-xl transition flex flex-col justify-between">
+            <div className="flex items-center gap-2 text-[#7A8699] text-[11px]">
+              <Receipt size={13} className="text-amber-400" />
+              <span>Party Receivables</span>
+            </div>
+            <p className="font-bold text-amber-400 font-mono text-lg sm:text-xl mt-1.5">
               {formatCurrency(stats.party_receivables_total || 0)}
             </p>
-            <span className="text-[10px] text-[#7A8699]">Outstanding unsettled balances</span>
+            <span className="text-[10px] text-[#7A8699] mt-0.5">Outstanding unsettled balances</span>
           </div>
         </div>
       </div>
 
       {/* Below Cards: Recent Purchases & Recent Sales */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 relative z-10">
         {/* Recent Purchases */}
-        <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-5 shadow-sm flex flex-col">
-          <div className="flex items-center justify-between mb-4">
+        <div className="bg-[#111B2E]/90 border border-[#1E2B45] hover:border-[#D6B36A]/30 rounded-2xl p-5 shadow-[0_8px_25px_rgba(0,0,0,0.4)] flex flex-col transition">
+          <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#1E2B45]/60">
             <h3 className="font-semibold text-[#F5F3EE] text-sm tracking-wide flex items-center gap-2">
               <ShoppingBag size={16} className="text-[#D6B36A]" />
               <span>Recent Purchases</span>
@@ -291,8 +367,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         {/* Recent Sales */}
-        <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-5 shadow-sm flex flex-col">
-          <div className="flex items-center justify-between mb-4">
+        <div className="bg-[#111B2E]/90 border border-[#1E2B45] hover:border-[#D6B36A]/30 rounded-2xl p-5 shadow-[0_8px_25px_rgba(0,0,0,0.4)] flex flex-col transition">
+          <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#1E2B45]/60">
             <h3 className="font-semibold text-[#F5F3EE] text-sm tracking-wide flex items-center gap-2">
               <Receipt size={16} className="text-[#D6B36A]" />
               <span>Recent Sales</span>
@@ -360,8 +436,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </div>
 
       {/* Small Inventory Status Summary */}
-      <div className="bg-[#111B2E] border border-[#1E2B45] rounded-xl p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-3">
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-b from-[#111B2E]/90 via-[#0E1729]/95 to-[#070C16] border border-[#1E2B45] hover:border-[#D6B36A]/30 p-5 shadow-[0_8px_25px_rgba(0,0,0,0.4)] transition">
+        <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#1E2B45]/60">
           <h3 className="font-semibold text-[#F5F3EE] text-sm tracking-wide flex items-center gap-2">
             <Boxes size={16} className="text-[#D6B36A]" />
             <span>Inventory Status Summary</span>
@@ -375,22 +451,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
-          <div className="p-3 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
+          <div className="p-3.5 bg-[#070C16]/80 border border-[#1E2B45] rounded-xl">
             <span className="text-[#7A8699]">Active Products:</span>
-            <p className="font-bold text-[#F5F3EE] text-base mt-0.5">{activeItems.length} items</p>
+            <p className="font-bold text-[#F5F3EE] text-base sm:text-lg mt-0.5">{activeItems.length} items</p>
           </div>
-          <div className="p-3 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
+          <div className="p-3.5 bg-[#070C16]/80 border border-[#1E2B45] rounded-xl">
             <span className="text-[#7A8699]">Total Stock Units:</span>
-            <p className="font-bold text-[#D6B36A] text-base font-mono mt-0.5">{stats.current_stock_units} pcs</p>
+            <p className="font-bold text-[#D6B36A] text-base sm:text-lg font-mono mt-0.5">{stats.current_stock_units} pcs</p>
           </div>
-          <div className="p-3 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
+          <div className="p-3.5 bg-[#070C16]/80 border border-[#1E2B45] rounded-xl">
             <span className="text-[#7A8699]">Total Asset Value:</span>
-            <p className="font-bold text-[#F5F3EE] text-base font-mono mt-0.5">{formatCurrency(stats.current_stock_value)}</p>
+            <p className="font-bold text-[#F5F3EE] text-base sm:text-lg font-mono mt-0.5">{formatCurrency(stats.current_stock_value)}</p>
           </div>
-          <div className="p-3 bg-[#0B1220] border border-[#1E2B45] rounded-lg">
+          <div className="p-3.5 bg-[#070C16]/80 border border-[#1E2B45] rounded-xl">
             <span className="text-[#7A8699]">Valuation Method:</span>
             <p className="font-medium text-emerald-400 mt-1">Purchase Cost</p>
           </div>
+        </div>
+
+        {/* Decorative Intertwined Wedding Bands (Bottom-Right Accent) */}
+        <div className="absolute -bottom-6 -right-6 pointer-events-none opacity-25 hidden xl:block">
+          <IntertwinedWeddingBands />
         </div>
       </div>
     </div>

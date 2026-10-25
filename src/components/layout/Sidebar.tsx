@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { ActiveNavTab } from '../../types';
 import { GoldLogo } from '../common/GoldLogo';
+import { PaisleyGoldWatermark } from '../common/JewelleryAssets';
 
 interface SidebarProps {
   activeTab: ActiveNavTab;
@@ -42,9 +43,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const sidebarContent = (
-    <div className="flex flex-col h-full bg-[#111B2E] border-r border-[#1E2B45] text-[#AAB4C5] select-none">
+    <div className="flex flex-col h-full bg-[#070C16] border-r border-[#1E2B45]/80 text-[#AAB4C5] select-none relative overflow-hidden">
       {/* Top Brand Block */}
-      <div className="pt-6 pb-5 px-6 flex flex-col items-center border-b border-[#1E2B45]/60 text-center relative">
+      <div className="pt-7 pb-5 px-6 flex flex-col items-center border-b border-[#1E2B45]/70 text-center relative">
         <button
           onClick={closeMobileNav}
           className="lg:hidden absolute top-4 right-4 p-1.5 text-[#AAB4C5] hover:text-white rounded-lg"
@@ -53,19 +54,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <X size={20} />
         </button>
 
-        <div className="relative mb-2">
-          <GoldLogo size={46} />
+        <div className="relative mb-2.5 drop-shadow-[0_0_12px_rgba(214,179,106,0.35)]">
+          <GoldLogo size={48} />
         </div>
-        <h2 className="font-serif font-bold text-sm tracking-[0.2em] text-[#D6B36A] uppercase">
-          SEVEN STAR JWELS
+        <h2 className="font-serif font-bold text-sm tracking-[0.2em] text-[#D6B36A] uppercase drop-shadow-sm">
+          SEVEN STAR JEWELS
         </h2>
-        <span className="text-[10px] text-[#AAB4C5] uppercase tracking-widest mt-0.5">
+        <span className="text-[10px] text-[#AAB4C5] uppercase tracking-[0.25em] font-medium mt-0.5">
           Wholesale Ledger
         </span>
       </div>
 
-      {/* Streamlined 8 Navigation Items */}
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+      {/* Streamlined Navigation Items */}
+      <nav className="flex-1 px-3.5 py-5 space-y-2 overflow-y-auto relative z-10">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive =
@@ -78,31 +79,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               key={item.id}
               onClick={() => handleNavClick(item.id)}
-              className={`w-full flex items-center gap-3.5 px-3.5 py-2.5 rounded-lg text-xs font-medium transition-all ${
+              className={`w-full flex items-center gap-3.5 px-4 py-3 rounded-xl text-xs transition-all duration-200 ${
                 isActive
-                  ? 'bg-gradient-to-r from-[#D6B36A]/25 via-[#D6B36A]/15 to-transparent text-[#F5F3EE] border-l-2 border-[#D6B36A] shadow-sm font-semibold'
-                  : 'text-[#AAB4C5] hover:text-[#F5F3EE] hover:bg-[#16233B]'
+                  ? 'bg-gradient-to-r from-[#D6B36A]/20 via-[#D6B36A]/10 to-transparent text-[#F5F3EE] border border-[#D6B36A]/50 shadow-[0_0_18px_rgba(214,179,106,0.18)] font-semibold'
+                  : 'text-[#AAB4C5] hover:text-[#F5F3EE] hover:bg-[#111B2E]/80 border border-transparent'
               }`}
             >
               <Icon
                 size={18}
                 className={isActive ? 'text-[#D6B36A]' : 'text-[#8A95A8]'}
               />
-              <span className="tracking-wide">{item.label}</span>
+              <span className="tracking-wide text-xs">{item.label}</span>
             </button>
           );
         })}
       </nav>
 
+      {/* Bottom Subtle Paisley Watermark */}
+      <div className="absolute -bottom-6 -left-6 pointer-events-none opacity-15">
+        <PaisleyGoldWatermark size={140} />
+      </div>
+
       {/* Bottom Brand Motto */}
-      <div className="p-4 border-t border-[#1E2B45]/60 text-center flex flex-col items-center">
-        <div className="flex items-center gap-2 mb-1.5 text-[#D6B36A]/60">
+      <div className="p-4 border-t border-[#1E2B45]/70 text-center flex flex-col items-center relative z-10 bg-[#070C16]/60 backdrop-blur-sm">
+        <div className="flex items-center gap-2 mb-1 text-[#D6B36A]/60">
           <span className="h-[1px] w-5 bg-[#D6B36A]/30"></span>
-          <span className="text-[9px]">❖</span>
+          <span className="text-[10px] text-[#D6B36A]">❖</span>
           <span className="h-[1px] w-5 bg-[#D6B36A]/30"></span>
         </div>
 
-        <p className="font-serif italic text-[11px] text-[#D6B36A] tracking-wider">
+        <p className="font-serif italic text-xs text-[#D6B36A] tracking-wider">
           &ldquo;Quality Builds Trust&rdquo;
         </p>
       </div>

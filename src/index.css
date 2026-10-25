@@ -1,4 +1,4 @@
-﻿@tailwind base;
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -35,6 +35,15 @@
   .border-gold-glow {
     border-color: rgba(214, 179, 106, 0.4);
     box-shadow: 0 0 15px rgba(214, 179, 106, 0.15);
+  }
+  .luxury-card {
+    background: linear-gradient(180deg, rgba(17, 27, 46, 0.95) 0%, rgba(14, 23, 41, 0.95) 50%, rgba(7, 12, 22, 0.98) 100%);
+    border: 1px solid rgba(214, 179, 106, 0.2);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  }
+  .luxury-card:hover {
+    border-color: rgba(214, 179, 106, 0.45);
+    box-shadow: 0 8px 30px rgba(214, 179, 106, 0.12);
   }
 }
 
