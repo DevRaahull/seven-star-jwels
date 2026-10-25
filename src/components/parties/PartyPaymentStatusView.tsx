@@ -99,39 +99,41 @@ export const PartyPaymentStatusView: React.FC<PartyPaymentStatusViewProps> = ({ 
     return list;
   }, [activeParties, activeStates]);
 
-  // Comprehensive Authoritative Calculation of All Parties (including Distributors & State Heads)
+  // Comprehensive Authoritative Calculation of Qualifying Distributor Records (Excluding State Head rows)
   const calculatedPartyRecords = useMemo(() => {
     const list: PartyPaymentStatusOverview[] = [];
 
-    activeParties.forEach(party => {
+    // Filter to only genuine distributor / downstream parties (exclude State Heads from directory rows)
+    const qualifyingParties = activeParties.filter(party => {
+      const isStateHead = party.party_type === 'state_head' ||
+        (!party.parent_party_id && party.party_type !== 'distributor' && activeParties.some(child => child.parent_party_id === party.id));
+      return !isStateHead;
+    });
+
+    qualifyingParties.forEach(party => {
       const state = activeStates.find(s => s.id === party.state_id);
 
       // Determine parent State Head if this is a distributor
       let parentPartyId = party.parent_party_id;
       let parentPartyName: string | undefined;
 
-      if (party.party_type === 'state_head') {
-        parentPartyId = undefined;
-        parentPartyName = undefined;
+      if (parentPartyId) {
+        const found = activeParties.find(par => par.id === parentPartyId);
+        parentPartyName = found?.name;
       } else {
-        if (parentPartyId) {
-          const found = activeParties.find(par => par.id === parentPartyId);
+        // Check if an incoming stock transfer came from a state head
+        const incoming = stockTransfers.find(t => t.destination_party_id === party.id && t.source_party_id && t.status !== 'reversed');
+        if (incoming?.source_party_id) {
+          parentPartyId = incoming.source_party_id;
+          const found = activeParties.find(par => par.id === incoming.source_party_id);
           parentPartyName = found?.name;
-        } else {
-          // Check if an incoming stock transfer came from a state head
-          const incoming = stockTransfers.find(t => t.destination_party_id === party.id && t.source_party_id && t.status !== 'reversed');
-          if (incoming?.source_party_id) {
-            parentPartyId = incoming.source_party_id;
-            const found = activeParties.find(par => par.id === incoming.source_party_id);
-            parentPartyName = found?.name;
-          }
-          if (!parentPartyName) {
-            // Find designated state head in the same state
-            const sh = activeParties.find(par => par.state_id === party.state_id && par.party_type === 'state_head');
-            if (sh) {
-              parentPartyId = sh.id;
-              parentPartyName = sh.name;
-            }
+        }
+        if (!parentPartyName) {
+          // Find designated state head in the same state
+          const sh = activeParties.find(par => par.state_id === party.state_id && (par.party_type === 'state_head' || activeParties.some(child => child.parent_party_id === par.id)));
+          if (sh) {
+            parentPartyId = sh.id;
+            parentPartyName = sh.name;
           }
         }
       }
@@ -611,7 +613,7 @@ export const PartyPaymentStatusView: React.FC<PartyPaymentStatusViewProps> = ({ 
               ₹{summaryMetrics.totalOutstanding.toLocaleString('en-IN')}
             </div>
             <p className="text-[10px] sm:text-xs text-[#AAB4C5]">
-              Active dues across {filteredRecords.filter(r => r.outstanding_amount > 0).length} parties
+              Active dues across {filteredRecords.filter(r => r.outstanding_amount > 0).length} distributors
             </p>
           </div>
         </div>
@@ -628,7 +630,7 @@ export const PartyPaymentStatusView: React.FC<PartyPaymentStatusViewProps> = ({ 
           </div>
           <div className="space-y-0.5">
             <div className="text-lg sm:text-2xl font-bold font-mono text-rose-400">
-              {summaryMetrics.dueCount} <span className="text-xs font-normal text-[#AAB4C5]">parties</span>
+              {summaryMetrics.dueCount} <span className="text-xs font-normal text-[#AAB4C5]">distributors</span>
             </div>
             <p className="text-[10px] sm:text-xs text-[#AAB4C5]">
               Full balance unpaid, awaiting collection
@@ -648,7 +650,7 @@ export const PartyPaymentStatusView: React.FC<PartyPaymentStatusViewProps> = ({ 
           </div>
           <div className="space-y-0.5">
             <div className="text-lg sm:text-2xl font-bold font-mono text-amber-400">
-              {summaryMetrics.partialCount} <span className="text-xs font-normal text-[#AAB4C5]">parties</span>
+              {summaryMetrics.partialCount} <span className="text-xs font-normal text-[#AAB4C5]">distributors</span>
             </div>
             <p className="text-[10px] sm:text-xs text-[#AAB4C5]">
               Partial payment received, remainder pending
@@ -668,7 +670,7 @@ export const PartyPaymentStatusView: React.FC<PartyPaymentStatusViewProps> = ({ 
           </div>
           <div className="space-y-0.5">
             <div className="text-lg sm:text-2xl font-bold font-mono text-emerald-400">
-              {summaryMetrics.completeCount} <span className="text-xs font-normal text-[#AAB4C5]">parties</span>
+              {summaryMetrics.completeCount} <span className="text-xs font-normal text-[#AAB4C5]">distributors</span>
             </div>
             <p className="text-[10px] sm:text-xs text-[#AAB4C5]">
               Fully settled obligations (₹0 balance)
@@ -829,7 +831,7 @@ export const PartyPaymentStatusView: React.FC<PartyPaymentStatusViewProps> = ({ 
             </p>
           </div>
           <span className="text-xs font-semibold text-[#D6B36A] px-2.5 py-1 bg-[#16233B] border border-[#1E2B45] rounded-lg">
-            {filteredRecords.length} {filteredRecords.length === 1 ? 'Party / Distributor' : 'Parties / Distributors'}
+            {filteredRecords.length} {filteredRecords.length === 1 ? 'Distributor' : 'Distributors'}
           </span>
         </div>
 
@@ -852,7 +854,7 @@ export const PartyPaymentStatusView: React.FC<PartyPaymentStatusViewProps> = ({ 
                 <thead>
                   <tr className="bg-[#0B1220] border-b border-[#1E2B45] text-[#8A95A8] uppercase tracking-wider text-[10px]">
                     <th className="py-3 px-4">State & State Head</th>
-                    <th className="py-3 px-3">Distributor / Party</th>
+                    <th className="py-3 px-3">Distributor Party</th>
                     <th className="py-3 px-3">Stock Supplied & Status</th>
                     <th className="py-3 px-3 text-right">Supply / Billed Value</th>
                     <th className="py-3 px-3 text-right">Received</th>
@@ -875,10 +877,10 @@ export const PartyPaymentStatusView: React.FC<PartyPaymentStatusViewProps> = ({ 
                           <span>{item.state_name}</span>
                         </div>
                         <div className="text-[11px] text-[#AAB4C5] mt-0.5">
-                          {item.party_type === 'state_head' || !item.parent_party_name ? (
-                            <span className="text-[#D6B36A] font-semibold">⭐ State Head</span>
-                          ) : (
+                          {item.parent_party_name ? (
                             <span className="text-[#8A95A8]">👤 Head: <strong className="text-[#F5F3EE]">{item.parent_party_name}</strong></span>
+                          ) : (
+                            <span className="text-[#7A8699]">State Network</span>
                           )}
                         </div>
                       </td>
@@ -889,15 +891,9 @@ export const PartyPaymentStatusView: React.FC<PartyPaymentStatusViewProps> = ({ 
                           <div className="font-semibold text-sm text-[#F5F3EE] group-hover:text-[#D6B36A] transition">
                             {item.party_name}
                           </div>
-                          {item.party_type === 'distributor' ? (
-                            <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/10 text-purple-300 border border-purple-500/20">
-                              Distributor
-                            </span>
-                          ) : (
-                            <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[#D6B36A]/10 text-[#D6B36A] border border-[#D6B36A]/20">
-                              State Head
-                            </span>
-                          )}
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                            Distributor
+                          </span>
                         </div>
                         {item.phone && (
                           <div className="text-[11px] text-[#7A8699] flex items-center gap-1 mt-0.5">
@@ -1012,15 +1008,9 @@ export const PartyPaymentStatusView: React.FC<PartyPaymentStatusViewProps> = ({ 
                     <div>
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-bold text-sm text-[#F5F3EE]">{item.party_name}</span>
-                        {item.party_type === 'distributor' ? (
-                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/10 text-purple-300 border border-purple-500/20">
-                            Distributor
-                          </span>
-                        ) : (
-                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[#D6B36A]/10 text-[#D6B36A] border border-[#D6B36A]/20">
-                            State Head
-                          </span>
-                        )}
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                          Distributor
+                        </span>
                       </div>
                       <div className="text-[11px] text-[#AAB4C5] flex items-center gap-1.5 mt-0.5">
                         <span>📍 {item.state_name}</span>

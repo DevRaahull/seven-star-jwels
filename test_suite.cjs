@@ -1714,6 +1714,12 @@ function calculatePartyPaymentOverview(parties, states, sales, payments, transfe
   const records = [];
 
   for (const p of activeParties) {
+    const isStateHead = p.party_type === 'state_head' ||
+      (!p.parent_party_id && p.party_type !== 'distributor' && activeParties.some(child => child.parent_party_id === p.id));
+    if (isStateHead && !filters?.includeStateHeads) {
+      continue;
+    }
+
     const state = stateMap.get(p.state_id);
 
     let parentPartyId = p.parent_party_id;
@@ -2205,7 +2211,7 @@ runTest('58. Party Payment Status: Recalculation after storage/page refresh prod
 // ====================================================
 // TEST 59: Individual distributors under State Head appear as separate rows with State Head linkage
 // ====================================================
-runTest('59. Party Payment Status: Individual distributors appear as separate rows with State Head hierarchy linkage', () => {
+runTest('59. Party Payment Status: Individual distributors appear as rows and State Head row is hidden', () => {
   const states = [{ id: 'st-goa', name: 'Goa' }];
   const parties = [
     { id: 'p-mohit', name: 'Mohit', party_type: 'state_head', state_id: 'st-goa', opening_balance: 0, is_archived: false },
@@ -2216,18 +2222,16 @@ runTest('59. Party Payment Status: Individual distributors appear as separate ro
   ];
 
   const overview = calculatePartyPaymentOverview(parties, states, [], [], transfers);
-  assert.strictEqual(overview.parties.length, 2, 'Must contain separate rows for Mohit and Shree Jwellers');
+  assert.strictEqual(overview.parties.length, 1, 'Payment Status directory must strictly exclude State Head row, leaving only Shree Jwellers');
 
-  const shreeRow = overview.parties.find(p => p.party_id === 'p-shree');
-  assert.ok(shreeRow, 'Shree Jwellers must have its own distinct row');
+  const shreeRow = overview.parties[0];
   assert.strictEqual(shreeRow.party_name, 'SHREE JWELLERS');
-  assert.strictEqual(shreeRow.parent_party_name, 'Mohit', 'Distributor must explicitly link to State Head Mohit');
+  assert.strictEqual(shreeRow.parent_party_name, 'Mohit', 'Distributor must contextually show State Head Mohit in State column');
   assert.strictEqual(shreeRow.stock_supplied_qty, 100, 'Must record 100 pcs stock supplied');
   assert.strictEqual(shreeRow.stock_settlement_status, 'Pending Settlement');
 
-  const mohitRow = overview.parties.find(p => p.party_id === 'p-mohit');
-  assert.ok(mohitRow, 'Mohit must have his own distinct State Head row');
-  assert.strictEqual(mohitRow.parent_party_name, undefined, 'State head has no parent');
+  const hasMohitRow = overview.parties.some(p => p.party_name === 'Mohit');
+  assert.strictEqual(hasMohitRow, false, 'State Head Mohit row must be hidden from directory');
 });
 
 // ====================================================
@@ -2255,7 +2259,7 @@ runTest('60. Party Payment Status: Stock supply marked pending displays as Payme
 // ====================================================
 // TEST 61: Multiple distributors under same State Head (Shree Jwellers & Jaishree Jwellers under Mohit)
 // ====================================================
-runTest('61. Party Payment Status: Multiple distributors under Mohit have separate rows and individual balances', () => {
+runTest('61. Party Payment Status: Multiple distributors under Mohit appear as rows, excluding State Head Mohit', () => {
   const states = [{ id: 'st-goa', name: 'Goa' }];
   const parties = [
     { id: 'p-mohit', name: 'Mohit', party_type: 'state_head', state_id: 'st-goa', is_archived: false },
@@ -2268,7 +2272,8 @@ runTest('61. Party Payment Status: Multiple distributors under Mohit have separa
   ];
 
   const overview = calculatePartyPaymentOverview(parties, states, [], [], transfers);
-  assert.strictEqual(overview.parties.length, 3, 'Must show 3 separate rows in Goa');
+  assert.strictEqual(overview.parties.length, 2, 'Must show exactly 2 distributor rows in Goa, excluding State Head Mohit');
+  assert.strictEqual(overview.parties.some(p => p.party_name === 'Mohit'), false, 'Mohit row must be excluded');
 
   const shree = overview.parties.find(p => p.party_id === 'p-shree');
   assert.strictEqual(shree.stock_supplied_qty, 100);
@@ -2281,7 +2286,7 @@ runTest('61. Party Payment Status: Multiple distributors under Mohit have separa
   assert.strictEqual(jaishree.status, 'pending');
 
   assert.strictEqual(overview.summary.totalOutstanding, 18000, 'Combined outstanding across Goa distributors must equal ₹18,000');
-  assert.strictEqual(overview.summary.dueCount, 2, '2 parties pending payment');
+  assert.strictEqual(overview.summary.dueCount, 2, '2 distributors pending payment');
 });
 
 // ====================================================
@@ -2339,8 +2344,9 @@ runTest('63. Party Payment Status: Filtering by State Head returns only distribu
   ];
 
   const mohitFilter = calculatePartyPaymentOverview(parties, states, [], [], transfers, { state_head_id: 'p-mohit' });
-  assert.strictEqual(mohitFilter.parties.length, 2, 'Mohit filter returns Mohit and Shree Jwellers');
-  assert.ok(mohitFilter.parties.some(p => p.party_id === 'p-shree'));
+  assert.strictEqual(mohitFilter.parties.length, 1, 'Mohit filter returns only distributors under Mohit');
+  assert.strictEqual(mohitFilter.parties[0].party_name, 'SHREE JWELLERS');
+  assert.ok(!mohitFilter.parties.some(p => p.party_name === 'Mohit'), 'Mohit State Head row is not in directory');
   assert.ok(!mohitFilter.parties.some(p => p.party_id === 'p-jaipur'), 'Must NOT return Jaipur Distributor');
 });
 
@@ -2365,19 +2371,23 @@ runTest('64. Party Payment Status: Recalculation after storage/page refresh pres
   const reloaded = JSON.parse(serialized);
 
   const overview = calculatePartyPaymentOverview(reloaded.parties, reloaded.states, [], [], reloaded.transfers);
-  assert.strictEqual(overview.parties.length, 3);
+  assert.strictEqual(overview.parties.length, 2, 'Must contain only the 2 distributors, hiding State Head Mohit');
+  assert.strictEqual(overview.parties.some(p => p.party_name === 'Mohit'), false, 'Mohit row must not appear');
 
   const shree = overview.parties.find(p => p.party_id === '79b342c4-4553-4ee0-9662-91f2053ec8b4');
   assert.strictEqual(shree.status, 'pending');
   assert.strictEqual(shree.status_label, 'Payment Pending');
   assert.strictEqual(shree.outstanding_amount, 10000);
+  assert.strictEqual(shree.parent_party_name, 'Mohit');
 
   const jaishree = overview.parties.find(p => p.party_id === '07be3211-28ed-4ac1-a070-a497e782dc1c');
   assert.strictEqual(jaishree.status, 'pending');
   assert.strictEqual(jaishree.status_label, 'Payment Pending');
   assert.strictEqual(jaishree.outstanding_amount, 8000);
+  assert.strictEqual(jaishree.parent_party_name, 'Mohit');
 
   assert.strictEqual(overview.summary.totalOutstanding, 18000);
+  assert.strictEqual(overview.summary.dueCount, 2);
 });
 
 console.log(`\n====================================================`);

@@ -3565,6 +3565,7 @@ class StorageService {
     endDate?: string;
     month?: string;
     sortBy?: 'outstanding_desc' | 'outstanding_asc' | 'payment_date_desc' | 'name_asc';
+    includeStateHeads?: boolean;
   }): Promise<{
     parties: PartyPaymentStatusOverview[];
     summary: {
@@ -3595,6 +3596,13 @@ class StorageService {
     let totalPaymentsReceivedOverall = 0;
 
     for (const p of activeParties) {
+      // Exclude State Head records from Payment Status Directory (only show individual distributors)
+      const isStateHead = p.party_type === 'state_head' ||
+        (!p.parent_party_id && p.party_type !== 'distributor' && activeParties.some(child => child.parent_party_id === p.id));
+      if (isStateHead && !filters?.includeStateHeads) {
+        continue;
+      }
+
       const state = states.find(s => s.id === p.state_id);
 
       // Determine parent State Head if this is a distributor
