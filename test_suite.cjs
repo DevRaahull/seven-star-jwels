@@ -1689,7 +1689,17 @@ runTest('50. Handed Over to State Heads Card: Accurately displays 0 pcs when all
 });
 
 // Helper calculation engine identical to StorageService.getPartyPaymentStatusOverview
-function calculatePartyPaymentOverview(parties, states, sales, payments, filters = {}) {
+function calculatePartyPaymentOverview(parties, states, sales, payments, transfersOrFilters = [], filtersArg = {}) {
+  let transfers = [];
+  let filters = {};
+  if (Array.isArray(transfersOrFilters)) {
+    transfers = transfersOrFilters;
+    filters = filtersArg || {};
+  } else if (transfersOrFilters && typeof transfersOrFilters === 'object') {
+    filters = transfersOrFilters;
+    transfers = [];
+  }
+
   const activeParties = parties.filter(p => !p.is_archived);
   const stateMap = new Map(states.map(s => [s.id, s]));
 
@@ -1705,6 +1715,33 @@ function calculatePartyPaymentOverview(parties, states, sales, payments, filters
 
   for (const p of activeParties) {
     const state = stateMap.get(p.state_id);
+
+    let parentPartyId = p.parent_party_id;
+    let parentPartyName;
+
+    if (p.party_type === 'state_head') {
+      parentPartyId = undefined;
+      parentPartyName = undefined;
+    } else {
+      if (parentPartyId) {
+        const found = parties.find(par => par.id === parentPartyId);
+        parentPartyName = found?.name;
+      } else {
+        const incoming = transfers.find(t => t.destination_party_id === p.id && t.source_party_id && t.status !== 'reversed');
+        if (incoming?.source_party_id) {
+          parentPartyId = incoming.source_party_id;
+          const found = parties.find(par => par.id === incoming.source_party_id);
+          parentPartyName = found?.name;
+        }
+        if (!parentPartyName) {
+          const sh = parties.find(par => par.state_id === p.state_id && par.party_type === 'state_head' && !par.is_archived);
+          if (sh) {
+            parentPartyId = sh.id;
+            parentPartyName = sh.name;
+          }
+        }
+      }
+    }
 
     const partySales = sales.filter(s => {
       if (s.party_id !== p.id || s.status !== 'completed') return false;
@@ -1722,6 +1759,70 @@ function calculatePartyPaymentOverview(parties, states, sales, payments, filters
       return true;
     });
 
+    const partyTransfers = transfers.filter(t => {
+      if (t.status === 'reversed' || t.status === 'cancelled') return false;
+      if (t.destination_party_id !== p.id && t.source_party_id !== p.id) return false;
+      if (filters?.endDate && new Date(t.transfer_date) > new Date(filters.endDate + 'T23:59:59')) return false;
+      if (filters?.startDate && new Date(t.transfer_date) < new Date(filters.startDate + 'T00:00:00')) return false;
+      if (filters?.month && !t.transfer_date.startsWith(filters.month)) return false;
+      return true;
+    });
+
+    let stockSuppliedQty = 0;
+    let stockReturnedQty = 0;
+    let stockSettledQty = 0;
+    let stockSuppliedValue = 0;
+    let pendingSupplyValue = 0;
+
+    partyTransfers.forEach(t => {
+      const qty = Number(t.quantity) || 0;
+      const rate = Number(t.rate) || 0;
+      const val = typeof t.total_value === 'number' && t.total_value > 0 ? t.total_value : (qty * rate);
+
+      if (t.destination_party_id === p.id) {
+        if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
+          stockSuppliedQty += qty;
+          stockSuppliedValue += val;
+          if (t.status === 'pending') {
+            pendingSupplyValue += val;
+          }
+        } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
+          stockSettledQty += qty;
+        } else if (t.transfer_type === 'return') {
+          stockSuppliedQty += qty;
+        }
+      } else if (t.source_party_id === p.id) {
+        if (t.transfer_type === 'return') {
+          stockReturnedQty += qty;
+        }
+      }
+    });
+
+    partySales.forEach(s => {
+      if (s.deduct_from_party_stock && Array.isArray(s.items)) {
+        s.items.forEach(it => {
+          stockSettledQty += (Number(it.quantity) || 0);
+        });
+      }
+    });
+
+    const stockPendingQty = Math.max(0, stockSuppliedQty - stockReturnedQty - stockSettledQty);
+
+    let stockSettlementStatus = 'No Consignment';
+    if (stockSuppliedQty === 0) {
+      stockSettlementStatus = 'No Consignment';
+    } else if (stockPendingQty === 0) {
+      stockSettlementStatus = 'Settled';
+    } else if (stockReturnedQty > 0 || stockSettledQty > 0) {
+      stockSettlementStatus = 'Partially Settled';
+    } else {
+      stockSettlementStatus = 'Pending Settlement';
+    }
+
+    const effectivePendingSupply = pendingSupplyValue > 0
+      ? pendingSupplyValue
+      : (p.party_type === 'distributor' && stockSettlementStatus === 'Pending Settlement' && stockSuppliedValue > 0 ? stockSuppliedValue : 0);
+
     const openingBalance = Number(p.opening_balance) || 0;
     const totalSalesBilled = partySales.reduce((sum, s) => sum + s.grand_total, 0);
     const totalSalePaymentsReceived = partySales.reduce((sum, s) => sum + (s.amount_received || 0), 0);
@@ -1734,9 +1835,9 @@ function calculatePartyPaymentOverview(parties, states, sales, payments, filters
 
     const totalReceived = Math.round((totalSalePaymentsReceived + directPaymentsReceived) * 100) / 100;
     const totalPaidOut = Math.round(directPaymentsPaid * 100) / 100;
-    const totalObligations = Math.round(((openingBalance > 0 ? openingBalance : 0) + totalSalesBilled) * 100) / 100;
+    const totalObligations = Math.round(((openingBalance > 0 ? openingBalance : 0) + totalSalesBilled + effectivePendingSupply) * 100) / 100;
 
-    const netPosition = Math.round((openingBalance + totalSalesBilled + totalPaidOut - totalReceived) * 100) / 100;
+    const netPosition = Math.round(((openingBalance + totalSalesBilled + effectivePendingSupply + totalPaidOut) - totalReceived) * 100) / 100;
     const outstandingAmount = netPosition > 0 ? netPosition : 0;
     const creditBalance = netPosition < 0 ? Math.abs(netPosition) : 0;
 
@@ -1762,7 +1863,7 @@ function calculatePartyPaymentOverview(parties, states, sales, payments, filters
     let status = 'no_transactions';
     let statusLabel = 'No Transactions';
 
-    const hasObligations = openingBalance !== 0 || partySales.length > 0;
+    const hasObligations = totalObligations > 0 || openingBalance !== 0 || effectivePendingSupply > 0 || stockPendingQty > 0;
     const hasPayments = totalReceived > 0 || totalPaidOut > 0;
 
     if (!hasObligations && !hasPayments) {
@@ -1773,8 +1874,8 @@ function calculatePartyPaymentOverview(parties, states, sales, payments, filters
         status = 'partial';
         statusLabel = 'Partially Paid';
       } else {
-        status = 'due';
-        statusLabel = 'Due';
+        status = effectivePendingSupply > 0 ? 'pending' : 'due';
+        statusLabel = effectivePendingSupply > 0 ? 'Payment Pending' : 'Due';
       }
     } else if (netPosition < 0) {
       status = 'advance';
@@ -1790,10 +1891,19 @@ function calculatePartyPaymentOverview(parties, states, sales, payments, filters
       state_id: p.state_id,
       state_name: state?.name || 'Unknown State',
       party_type: p.party_type,
+      parent_party_id: parentPartyId,
+      parent_party_name: parentPartyName,
       phone: p.phone,
       opening_balance: openingBalance,
+      stock_supplied_qty: stockSuppliedQty,
+      stock_returned_qty: stockReturnedQty,
+      stock_settled_qty: stockSettledQty,
+      stock_pending_qty: stockPendingQty,
+      stock_supplied_value: Math.round(stockSuppliedValue * 100) / 100,
+      stock_settlement_status: stockSettlementStatus,
       total_obligations: totalObligations,
       total_sales_billed: totalSalesBilled,
+      pending_supply_value: Math.round(effectivePendingSupply * 100) / 100,
       total_received: totalReceived,
       total_paid_out: totalPaidOut,
       net_position: netPosition,
@@ -1804,26 +1914,37 @@ function calculatePartyPaymentOverview(parties, states, sales, payments, filters
       last_payment_date: latestPaymentDate,
       last_payment_amount: latestPaymentAmount,
       invoices_count: partySales.length,
-      payments_count: specificPayments.length
+      payments_count: specificPayments.length,
+      transfers_count: partyTransfers.length
     });
   }
 
   let filtered = records.filter(r => {
     if (filters?.state_id && filters.state_id !== 'all' && r.state_id !== filters.state_id) return false;
+    if (filters?.state_head_id && filters.state_head_id !== 'all') {
+      if (r.party_id !== filters.state_head_id && r.parent_party_id !== filters.state_head_id) return false;
+    }
     if (filters?.party_id && filters.party_id !== 'all' && r.party_id !== filters.party_id) return false;
-    if (filters?.status && filters.status !== 'all' && r.status !== filters.status) return false;
+    if (filters?.status && filters.status !== 'all') {
+      if (filters.status === 'pending' || filters.status === 'due') {
+        if (r.status !== 'pending' && r.status !== 'due') return false;
+      } else if (r.status !== filters.status) {
+        return false;
+      }
+    }
     if (filters?.searchQuery) {
       const q = filters.searchQuery.toLowerCase().trim();
       const matchesName = r.party_name.toLowerCase().includes(q);
       const matchesState = r.state_name.toLowerCase().includes(q);
+      const matchesHead = r.parent_party_name ? r.parent_party_name.toLowerCase().includes(q) : false;
       const matchesPhone = r.phone ? r.phone.toLowerCase().includes(q) : false;
-      if (!matchesName && !matchesState && !matchesPhone) return false;
+      if (!matchesName && !matchesState && !matchesHead && !matchesPhone) return false;
     }
     return true;
   });
 
   filtered.forEach(r => {
-    if (r.status === 'due') dueCount++;
+    if (r.status === 'due' || r.status === 'pending') dueCount++;
     else if (r.status === 'partial') partialCount++;
     else if (r.status === 'complete') completeCount++;
     else if (r.status === 'advance') advanceCount++;
@@ -2079,6 +2200,184 @@ runTest('58. Party Payment Status: Recalculation after storage/page refresh prod
   assert.strictEqual(party.status, 'partial');
   assert.strictEqual(overview.summary.totalOutstanding, 25000);
   assert.strictEqual(overview.summary.totalPaymentsReceived, 60000);
+});
+
+// ====================================================
+// TEST 59: Individual distributors under State Head appear as separate rows with State Head linkage
+// ====================================================
+runTest('59. Party Payment Status: Individual distributors appear as separate rows with State Head hierarchy linkage', () => {
+  const states = [{ id: 'st-goa', name: 'Goa' }];
+  const parties = [
+    { id: 'p-mohit', name: 'Mohit', party_type: 'state_head', state_id: 'st-goa', opening_balance: 0, is_archived: false },
+    { id: 'p-shree', name: 'SHREE JWELLERS', party_type: 'distributor', parent_party_id: 'p-mohit', state_id: 'st-goa', opening_balance: 0, is_archived: false }
+  ];
+  const transfers = [
+    { destination_party_id: 'p-shree', source_party_id: 'p-mohit', quantity: 100, rate: 100, total_value: 10000, transfer_type: 'handover', status: 'pending' }
+  ];
+
+  const overview = calculatePartyPaymentOverview(parties, states, [], [], transfers);
+  assert.strictEqual(overview.parties.length, 2, 'Must contain separate rows for Mohit and Shree Jwellers');
+
+  const shreeRow = overview.parties.find(p => p.party_id === 'p-shree');
+  assert.ok(shreeRow, 'Shree Jwellers must have its own distinct row');
+  assert.strictEqual(shreeRow.party_name, 'SHREE JWELLERS');
+  assert.strictEqual(shreeRow.parent_party_name, 'Mohit', 'Distributor must explicitly link to State Head Mohit');
+  assert.strictEqual(shreeRow.stock_supplied_qty, 100, 'Must record 100 pcs stock supplied');
+  assert.strictEqual(shreeRow.stock_settlement_status, 'Pending Settlement');
+
+  const mohitRow = overview.parties.find(p => p.party_id === 'p-mohit');
+  assert.ok(mohitRow, 'Mohit must have his own distinct State Head row');
+  assert.strictEqual(mohitRow.parent_party_name, undefined, 'State head has no parent');
+});
+
+// ====================================================
+// TEST 60: Stock supply with status "pending" displays as Payment Pending with exact supply value
+// ====================================================
+runTest('60. Party Payment Status: Stock supply marked pending displays as Payment Pending with exact supply value', () => {
+  const states = [{ id: 'st-goa', name: 'Goa' }];
+  const parties = [
+    { id: 'p-shree', name: 'SHREE JWELLERS', party_type: 'distributor', state_id: 'st-goa', opening_balance: 0, is_archived: false }
+  ];
+  const transfers = [
+    { destination_party_id: 'p-shree', quantity: 100, rate: 100, total_value: 10000, transfer_type: 'handover', status: 'pending' }
+  ];
+
+  const overview = calculatePartyPaymentOverview(parties, states, [], [], transfers);
+  const shree = overview.parties[0];
+  assert.strictEqual(shree.status, 'pending', 'Must have status "pending"');
+  assert.strictEqual(shree.status_label, 'Payment Pending', 'Must have label "Payment Pending"');
+  assert.strictEqual(shree.total_obligations, 10000, 'Obligations must equal ₹10,000');
+  assert.strictEqual(shree.outstanding_amount, 10000, 'Outstanding due must equal ₹10,000');
+  assert.strictEqual(overview.summary.dueCount, 1);
+  assert.strictEqual(overview.summary.totalOutstanding, 10000);
+});
+
+// ====================================================
+// TEST 61: Multiple distributors under same State Head (Shree Jwellers & Jaishree Jwellers under Mohit)
+// ====================================================
+runTest('61. Party Payment Status: Multiple distributors under Mohit have separate rows and individual balances', () => {
+  const states = [{ id: 'st-goa', name: 'Goa' }];
+  const parties = [
+    { id: 'p-mohit', name: 'Mohit', party_type: 'state_head', state_id: 'st-goa', is_archived: false },
+    { id: 'p-shree', name: 'SHREE JWELLERS', party_type: 'distributor', parent_party_id: 'p-mohit', state_id: 'st-goa', is_archived: false },
+    { id: 'p-jaishree', name: 'JAI SHREE JWELLERS', party_type: 'distributor', parent_party_id: 'p-mohit', state_id: 'st-goa', is_archived: false }
+  ];
+  const transfers = [
+    { destination_party_id: 'p-shree', source_party_id: 'p-mohit', quantity: 100, rate: 100, total_value: 10000, transfer_type: 'handover', status: 'pending' },
+    { destination_party_id: 'p-jaishree', source_party_id: 'p-mohit', quantity: 50, rate: 160, total_value: 8000, transfer_type: 'handover', status: 'pending' }
+  ];
+
+  const overview = calculatePartyPaymentOverview(parties, states, [], [], transfers);
+  assert.strictEqual(overview.parties.length, 3, 'Must show 3 separate rows in Goa');
+
+  const shree = overview.parties.find(p => p.party_id === 'p-shree');
+  assert.strictEqual(shree.stock_supplied_qty, 100);
+  assert.strictEqual(shree.outstanding_amount, 10000);
+  assert.strictEqual(shree.status, 'pending');
+
+  const jaishree = overview.parties.find(p => p.party_id === 'p-jaishree');
+  assert.strictEqual(jaishree.stock_supplied_qty, 50);
+  assert.strictEqual(jaishree.outstanding_amount, 8000);
+  assert.strictEqual(jaishree.status, 'pending');
+
+  assert.strictEqual(overview.summary.totalOutstanding, 18000, 'Combined outstanding across Goa distributors must equal ₹18,000');
+  assert.strictEqual(overview.summary.dueCount, 2, '2 parties pending payment');
+});
+
+// ====================================================
+// TEST 62: Payment to one distributor does NOT clear another distributor
+// ====================================================
+runTest('62. Party Payment Status: Payment from Shree Jwellers updates only Shree Jwellers and never Jaishree Jwellers', () => {
+  const states = [{ id: 'st-goa', name: 'Goa' }];
+  const parties = [
+    { id: 'p-mohit', name: 'Mohit', party_type: 'state_head', state_id: 'st-goa', is_archived: false },
+    { id: 'p-shree', name: 'SHREE JWELLERS', party_type: 'distributor', parent_party_id: 'p-mohit', state_id: 'st-goa', is_archived: false },
+    { id: 'p-jaishree', name: 'JAI SHREE JWELLERS', party_type: 'distributor', parent_party_id: 'p-mohit', state_id: 'st-goa', is_archived: false }
+  ];
+  const transfers = [
+    { destination_party_id: 'p-shree', source_party_id: 'p-mohit', quantity: 100, rate: 100, total_value: 10000, transfer_type: 'handover', status: 'pending' },
+    { destination_party_id: 'p-jaishree', source_party_id: 'p-mohit', quantity: 50, rate: 160, total_value: 8000, transfer_type: 'handover', status: 'pending' }
+  ];
+
+  // Shree Jwellers makes a payment of ₹4,000
+  const payments = [
+    { id: 'pay-shree-1', party_id: 'p-shree', amount: 4000, payment_type: 'received', payment_date: '2026-10-25' }
+  ];
+
+  const overview = calculatePartyPaymentOverview(parties, states, [], payments, transfers);
+  const shree = overview.parties.find(p => p.party_id === 'p-shree');
+  assert.strictEqual(shree.total_received, 4000, 'Shree Jwellers received must equal ₹4,000');
+  assert.strictEqual(shree.outstanding_amount, 6000, 'Shree Jwellers balance must reduce to ₹6,000');
+  assert.strictEqual(shree.status, 'partial', 'Shree Jwellers must transition to Partially Paid');
+
+  const jaishree = overview.parties.find(p => p.party_id === 'p-jaishree');
+  assert.strictEqual(jaishree.total_received, 0, 'Jaishree received remains ₹0');
+  assert.strictEqual(jaishree.outstanding_amount, 8000, 'Jaishree balance remains strictly ₹8,000');
+  assert.strictEqual(jaishree.status, 'pending', 'Jaishree status remains Payment Pending');
+
+  assert.strictEqual(overview.summary.totalOutstanding, 14000, 'Total outstanding is now ₹6,000 + ₹8,000 = ₹14,000');
+  assert.strictEqual(overview.summary.totalPaymentsReceived, 4000);
+});
+
+// ====================================================
+// TEST 63: Filter by State Head returns only distributors under that State Head
+// ====================================================
+runTest('63. Party Payment Status: Filtering by State Head returns only distributors linked to that State Head', () => {
+  const states = [
+    { id: 'st-goa', name: 'Goa' },
+    { id: 'st-raj', name: 'Rajasthan' }
+  ];
+  const parties = [
+    { id: 'p-mohit', name: 'Mohit', party_type: 'state_head', state_id: 'st-goa', is_archived: false },
+    { id: 'p-shree', name: 'SHREE JWELLERS', party_type: 'distributor', parent_party_id: 'p-mohit', state_id: 'st-goa', is_archived: false },
+    { id: 'p-rajesh', name: 'Rajesh', party_type: 'state_head', state_id: 'st-raj', is_archived: false },
+    { id: 'p-jaipur', name: 'Jaipur Distributor', party_type: 'distributor', parent_party_id: 'p-rajesh', state_id: 'st-raj', is_archived: false }
+  ];
+  const transfers = [
+    { destination_party_id: 'p-shree', source_party_id: 'p-mohit', quantity: 100, rate: 100, total_value: 10000, transfer_type: 'handover', status: 'pending' },
+    { destination_party_id: 'p-jaipur', source_party_id: 'p-rajesh', quantity: 80, rate: 200, total_value: 16000, transfer_type: 'handover', status: 'pending' }
+  ];
+
+  const mohitFilter = calculatePartyPaymentOverview(parties, states, [], [], transfers, { state_head_id: 'p-mohit' });
+  assert.strictEqual(mohitFilter.parties.length, 2, 'Mohit filter returns Mohit and Shree Jwellers');
+  assert.ok(mohitFilter.parties.some(p => p.party_id === 'p-shree'));
+  assert.ok(!mohitFilter.parties.some(p => p.party_id === 'p-jaipur'), 'Must NOT return Jaipur Distributor');
+});
+
+// ====================================================
+// TEST 64: Persistence and recalculation after refresh preserves Goa distributors' statuses
+// ====================================================
+runTest('64. Party Payment Status: Recalculation after storage/page refresh preserves Goa distributors as Payment Pending', () => {
+  const originalState = {
+    states: [{ id: 'st-goa', name: 'Goa' }],
+    parties: [
+      { id: '50f24e60-eab2-4da9-88cd-389ed312cd86', name: 'Mohit', party_type: 'state_head', state_id: 'st-goa', is_archived: false },
+      { id: '79b342c4-4553-4ee0-9662-91f2053ec8b4', name: 'SHREE JWELLERS', party_type: 'distributor', parent_party_id: '50f24e60-eab2-4da9-88cd-389ed312cd86', state_id: 'st-goa', is_archived: false },
+      { id: '07be3211-28ed-4ac1-a070-a497e782dc1c', name: 'JAI SHREE JWELLERS', party_type: 'distributor', parent_party_id: '50f24e60-eab2-4da9-88cd-389ed312cd86', state_id: 'st-goa', is_archived: false }
+    ],
+    transfers: [
+      { reference_no: 'TR-233629', destination_party_id: '79b342c4-4553-4ee0-9662-91f2053ec8b4', source_party_id: '50f24e60-eab2-4da9-88cd-389ed312cd86', quantity: 100, rate: 100, total_value: 10000, transfer_type: 'handover', status: 'pending' },
+      { reference_no: 'TR-516245', destination_party_id: '07be3211-28ed-4ac1-a070-a497e782dc1c', source_party_id: '50f24e60-eab2-4da9-88cd-389ed312cd86', quantity: 50, rate: 160, total_value: 8000, transfer_type: 'handover', status: 'pending' }
+    ]
+  };
+
+  const serialized = JSON.stringify(originalState);
+  const reloaded = JSON.parse(serialized);
+
+  const overview = calculatePartyPaymentOverview(reloaded.parties, reloaded.states, [], [], reloaded.transfers);
+  assert.strictEqual(overview.parties.length, 3);
+
+  const shree = overview.parties.find(p => p.party_id === '79b342c4-4553-4ee0-9662-91f2053ec8b4');
+  assert.strictEqual(shree.status, 'pending');
+  assert.strictEqual(shree.status_label, 'Payment Pending');
+  assert.strictEqual(shree.outstanding_amount, 10000);
+
+  const jaishree = overview.parties.find(p => p.party_id === '07be3211-28ed-4ac1-a070-a497e782dc1c');
+  assert.strictEqual(jaishree.status, 'pending');
+  assert.strictEqual(jaishree.status_label, 'Payment Pending');
+  assert.strictEqual(jaishree.outstanding_amount, 8000);
+
+  assert.strictEqual(overview.summary.totalOutstanding, 18000);
 });
 
 console.log(`\n====================================================`);

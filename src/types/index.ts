@@ -250,7 +250,7 @@ export interface PartyMoneyLedgerSummary {
 }
 
 // --- PARTY PAYMENT STATUS OVERVIEW ---
-export type PartyFinancialStatus = 'due' | 'partial' | 'complete' | 'advance' | 'no_transactions';
+export type PartyFinancialStatus = 'pending' | 'due' | 'partial' | 'complete' | 'advance' | 'no_transactions';
 
 export interface PartyPaymentStatusOverview {
   party_id: string;
@@ -258,22 +258,37 @@ export interface PartyPaymentStatusOverview {
   state_id: string;
   state_name: string;
   party_type?: PartyRole;
+  parent_party_id?: string;
+  parent_party_name?: string;
   phone?: string;
   address?: string;
   opening_balance: number;
+
+  // Stock supply tracking
+  stock_supplied_qty: number;
+  stock_returned_qty: number;
+  stock_settled_qty: number;
+  stock_pending_qty: number;
+  stock_supplied_value: number;
+  stock_settlement_status: 'Pending Settlement' | 'Partially Settled' | 'Settled' | 'No Consignment';
+
+  // Financial obligations tracking
   total_obligations: number;
   total_sales_billed: number;
+  pending_supply_value: number;
   total_received: number;
   total_paid_out: number;
   net_position: number;
   outstanding_amount: number;
   credit_balance: number;
+
   status: PartyFinancialStatus;
   status_label: string;
   last_payment_date?: string;
   last_payment_amount?: number;
   invoices_count: number;
   payments_count: number;
+  transfers_count: number;
 }
 
 // --- OPERATING EXPENSES ---

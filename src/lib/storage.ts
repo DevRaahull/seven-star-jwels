@@ -3557,6 +3557,7 @@ class StorageService {
   // --- PARTY PAYMENT STATUS OVERVIEW ---
   async getPartyPaymentStatusOverview(filters?: {
     state_id?: string;
+    state_head_id?: string;
     party_id?: string;
     status?: PartyFinancialStatus;
     searchQuery?: string;
@@ -3580,6 +3581,7 @@ class StorageService {
     const states = await this.getStates();
     const sales = await this.getSales();
     const payments = await this.getPartyPayments();
+    const transfers = await this.getStockTransfers();
 
     const activeParties = parties.filter(p => !p.is_archived);
     const records: PartyPaymentStatusOverview[] = [];
@@ -3594,6 +3596,36 @@ class StorageService {
 
     for (const p of activeParties) {
       const state = states.find(s => s.id === p.state_id);
+
+      // Determine parent State Head if this is a distributor
+      let parentPartyId = p.parent_party_id;
+      let parentPartyName: string | undefined;
+
+      if (p.party_type === 'state_head') {
+        parentPartyId = undefined;
+        parentPartyName = undefined;
+      } else {
+        if (parentPartyId) {
+          const found = parties.find(par => par.id === parentPartyId);
+          parentPartyName = found?.name;
+        } else {
+          // Check if an incoming stock transfer came from a state head
+          const incoming = transfers.find(t => t.destination_party_id === p.id && t.source_party_id && t.status !== 'reversed');
+          if (incoming?.source_party_id) {
+            parentPartyId = incoming.source_party_id;
+            const found = parties.find(par => par.id === incoming.source_party_id);
+            parentPartyName = found?.name;
+          }
+          if (!parentPartyName) {
+            // Find designated state head in the same state
+            const sh = parties.find(par => par.state_id === p.state_id && par.party_type === 'state_head' && !par.is_archived);
+            if (sh) {
+              parentPartyId = sh.id;
+              parentPartyName = sh.name;
+            }
+          }
+        }
+      }
 
       // Invoices/sales for this party
       const partySales = sales.filter(s => {
@@ -3613,6 +3645,72 @@ class StorageService {
         return true;
       });
 
+      // Stock transfers for this party
+      const partyTransfers = transfers.filter(t => {
+        if (t.status === 'reversed' || t.status === 'cancelled') return false;
+        if (t.destination_party_id !== p.id && t.source_party_id !== p.id) return false;
+        if (filters?.endDate && new Date(t.transfer_date) > new Date(filters.endDate + 'T23:59:59')) return false;
+        if (filters?.startDate && new Date(t.transfer_date) < new Date(filters.startDate + 'T00:00:00')) return false;
+        if (filters?.month && !t.transfer_date.startsWith(filters.month)) return false;
+        return true;
+      });
+
+      let stockSuppliedQty = 0;
+      let stockReturnedQty = 0;
+      let stockSettledQty = 0;
+      let stockSuppliedValue = 0;
+      let pendingSupplyValue = 0;
+
+      partyTransfers.forEach(t => {
+        const qty = Number(t.quantity) || 0;
+        const rate = Number(t.rate) || 0;
+        const val = typeof t.total_value === 'number' && t.total_value > 0 ? t.total_value : (qty * rate);
+
+        if (t.destination_party_id === p.id) {
+          if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
+            stockSuppliedQty += qty;
+            stockSuppliedValue += val;
+            if (t.status === 'pending') {
+              pendingSupplyValue += val;
+            }
+          } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
+            stockSettledQty += qty;
+          } else if (t.transfer_type === 'return') {
+            stockSuppliedQty += qty;
+          }
+        } else if (t.source_party_id === p.id) {
+          if (t.transfer_type === 'return') {
+            stockReturnedQty += qty;
+          }
+        }
+      });
+
+      partySales.forEach(s => {
+        if (s.deduct_from_party_stock && Array.isArray(s.items)) {
+          s.items.forEach(it => {
+            stockSettledQty += (Number(it.quantity) || 0);
+          });
+        }
+      });
+
+      const stockPendingQty = Math.max(0, stockSuppliedQty - stockReturnedQty - stockSettledQty);
+
+      let stockSettlementStatus: 'Pending Settlement' | 'Partially Settled' | 'Settled' | 'No Consignment' = 'No Consignment';
+      if (stockSuppliedQty === 0) {
+        stockSettlementStatus = 'No Consignment';
+      } else if (stockPendingQty === 0) {
+        stockSettlementStatus = 'Settled';
+      } else if (stockReturnedQty > 0 || stockSettledQty > 0) {
+        stockSettlementStatus = 'Partially Settled';
+      } else {
+        stockSettlementStatus = 'Pending Settlement';
+      }
+
+      // Pending supply agreement for distributors awaiting financial settlement
+      const effectivePendingSupply = pendingSupplyValue > 0
+        ? pendingSupplyValue
+        : (p.party_type === 'distributor' && stockSettlementStatus === 'Pending Settlement' && stockSuppliedValue > 0 ? stockSuppliedValue : 0);
+
       const openingBalance = Number(p.opening_balance) || 0;
       const totalSalesBilled = partySales.reduce((sum, s) => sum + s.grand_total, 0);
       const totalSalePaymentsReceived = partySales.reduce((sum, s) => sum + (s.amount_received || 0), 0);
@@ -3625,9 +3723,9 @@ class StorageService {
 
       const totalReceived = Math.round((totalSalePaymentsReceived + directPaymentsReceived) * 100) / 100;
       const totalPaidOut = Math.round(directPaymentsPaid * 100) / 100;
-      const totalObligations = Math.round(((openingBalance > 0 ? openingBalance : 0) + totalSalesBilled) * 100) / 100;
+      const totalObligations = Math.round(((openingBalance > 0 ? openingBalance : 0) + totalSalesBilled + effectivePendingSupply) * 100) / 100;
 
-      const netPosition = Math.round((openingBalance + totalSalesBilled + totalPaidOut - totalReceived) * 100) / 100;
+      const netPosition = Math.round(((openingBalance + totalSalesBilled + effectivePendingSupply + totalPaidOut) - totalReceived) * 100) / 100;
       const outstandingAmount = netPosition > 0 ? netPosition : 0;
       const creditBalance = netPosition < 0 ? Math.abs(netPosition) : 0;
 
@@ -3652,11 +3750,11 @@ class StorageService {
         latestPaymentAmount = paymentDates[0].amount;
       }
 
-      // Determine Status strictly by accounting rules
+      // Determine Status strictly by accounting & supply settlement rules
       let status: PartyFinancialStatus = 'no_transactions';
       let statusLabel = 'No Transactions';
 
-      const hasObligations = openingBalance !== 0 || partySales.length > 0;
+      const hasObligations = totalObligations > 0 || openingBalance !== 0 || effectivePendingSupply > 0 || stockPendingQty > 0;
       const hasPayments = totalReceived > 0 || totalPaidOut > 0;
 
       if (!hasObligations && !hasPayments) {
@@ -3667,8 +3765,8 @@ class StorageService {
           status = 'partial';
           statusLabel = 'Partially Paid';
         } else {
-          status = 'due';
-          statusLabel = 'Due';
+          status = effectivePendingSupply > 0 ? 'pending' : 'due';
+          statusLabel = effectivePendingSupply > 0 ? 'Payment Pending' : 'Due';
         }
       } else if (netPosition < 0) {
         status = 'advance';
@@ -3685,11 +3783,20 @@ class StorageService {
         state_id: p.state_id,
         state_name: state?.name || 'Unknown State',
         party_type: p.party_type,
+        parent_party_id: parentPartyId,
+        parent_party_name: parentPartyName,
         phone: p.phone,
         address: p.address,
         opening_balance: openingBalance,
+        stock_supplied_qty: stockSuppliedQty,
+        stock_returned_qty: stockReturnedQty,
+        stock_settled_qty: stockSettledQty,
+        stock_pending_qty: stockPendingQty,
+        stock_supplied_value: Math.round(stockSuppliedValue * 100) / 100,
+        stock_settlement_status: stockSettlementStatus,
         total_obligations: totalObligations,
         total_sales_billed: totalSalesBilled,
+        pending_supply_value: Math.round(effectivePendingSupply * 100) / 100,
         total_received: totalReceived,
         total_paid_out: totalPaidOut,
         net_position: netPosition,
@@ -3700,7 +3807,8 @@ class StorageService {
         last_payment_date: latestPaymentDate,
         last_payment_amount: latestPaymentAmount,
         invoices_count: partySales.length,
-        payments_count: specificPayments.length
+        payments_count: specificPayments.length,
+        transfers_count: partyTransfers.length
       };
 
       records.push(record);
@@ -3709,21 +3817,31 @@ class StorageService {
     // Apply Filters
     let filtered = records.filter(r => {
       if (filters?.state_id && filters.state_id !== 'all' && r.state_id !== filters.state_id) return false;
+      if (filters?.state_head_id && filters.state_head_id !== 'all') {
+        if (r.party_id !== filters.state_head_id && r.parent_party_id !== filters.state_head_id) return false;
+      }
       if (filters?.party_id && filters.party_id !== 'all' && r.party_id !== filters.party_id) return false;
-      if (filters?.status && filters.status !== 'all' && r.status !== filters.status) return false;
+      if (filters?.status && filters.status !== 'all') {
+        if (filters.status === 'pending' || filters.status === 'due') {
+          if (r.status !== 'pending' && r.status !== 'due') return false;
+        } else if (r.status !== filters.status) {
+          return false;
+        }
+      }
       if (filters?.searchQuery) {
         const q = filters.searchQuery.toLowerCase().trim();
         const matchesName = r.party_name.toLowerCase().includes(q);
         const matchesState = r.state_name.toLowerCase().includes(q);
+        const matchesStateHead = r.parent_party_name ? r.parent_party_name.toLowerCase().includes(q) : false;
         const matchesPhone = r.phone ? r.phone.toLowerCase().includes(q) : false;
-        if (!matchesName && !matchesState && !matchesPhone) return false;
+        if (!matchesName && !matchesState && !matchesStateHead && !matchesPhone) return false;
       }
       return true;
     });
 
     // Compute Summary across filtered parties (never double count)
     filtered.forEach(r => {
-      if (r.status === 'due') dueCount++;
+      if (r.status === 'due' || r.status === 'pending') dueCount++;
       else if (r.status === 'partial') partialCount++;
       else if (r.status === 'complete') completeCount++;
       else if (r.status === 'advance') advanceCount++;

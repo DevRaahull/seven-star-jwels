@@ -1570,21 +1570,25 @@ export const StatesPartiesView: React.FC = () => {
             <button
               onClick={() => {
                 setActiveViewTab('payments');
-                setSelectedStateId(null);
               }}
               className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
-                activeViewTab === 'payments' && !selectedStateId
+                activeViewTab === 'payments'
                   ? 'border-[#D6B36A] text-[#D6B36A]'
                   : 'border-transparent text-[#8A95A8] hover:text-[#F5F3EE]'
               }`}
             >
               <Receipt size={15} />
-              <span>Party Payment Status</span>
+              <span>{selectedStateId && activeStateRecord ? `${activeStateRecord.name} Payment Status` : 'Party Payment Status'}</span>
             </button>
 
-            {selectedStateId && (
+            {selectedStateId && activeStateRecord && (
               <button
-                className="px-4 py-2.5 text-xs font-semibold border-b-2 border-[#D6B36A] text-[#D6B36A] flex items-center gap-2 whitespace-nowrap"
+                onClick={() => setActiveViewTab('states')}
+                className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition flex items-center gap-2 whitespace-nowrap ${
+                  activeViewTab !== 'payments'
+                    ? 'border-[#D6B36A] text-[#D6B36A]'
+                    : 'border-transparent text-[#8A95A8] hover:text-[#F5F3EE]'
+                }`}
               >
                 <Building2 size={15} />
                 <span>{activeStateRecord?.name} Parties ({filteredParties.length})</span>
@@ -1593,7 +1597,7 @@ export const StatesPartiesView: React.FC = () => {
           </div>
 
           {/* VIEW: SPECIFIC STATE OPENED */}
-          {selectedStateId && activeStateRecord && (
+          {selectedStateId && activeStateRecord && activeViewTab !== 'payments' && (
             <div className="space-y-5">
               {/* State Header Card */}
               <div className="bg-[#111B2E] border border-[#1E2B45] rounded-2xl p-5 shadow-sm space-y-4">
@@ -1611,7 +1615,17 @@ export const StatesPartiesView: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => {
+                        setActiveViewTab('payments');
+                      }}
+                      className="flex items-center gap-1.5 px-3.5 py-2 bg-[#16233B] hover:bg-[#1E2E4A] text-[#D6B36A] rounded-xl text-xs font-semibold border border-[#D6B36A]/30 transition"
+                    >
+                      <Receipt size={14} />
+                      <span>{activeStateRecord.name} Payment Status</span>
+                    </button>
+
                     <button
                       onClick={() => {
                         setPartyStateId(activeStateRecord.id);
@@ -2808,8 +2822,9 @@ export const StatesPartiesView: React.FC = () => {
           )}
 
           {/* VIEW: PARTY PAYMENT STATUS OVERVIEW */}
-          {activeViewTab === 'payments' && !selectedStateId && (
+          {activeViewTab === 'payments' && (
             <PartyPaymentStatusView
+              initialStateId={selectedStateId}
               onOpenPartyLedger={(partyId: string) => {
                 setSelectedPartyId(partyId);
               }}
