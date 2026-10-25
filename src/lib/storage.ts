@@ -2501,28 +2501,40 @@ class StorageService {
 
     transfers.forEach(t => {
       if (itemId && t.item_id !== itemId) return;
-      if (t.status === 'cancelled') return;
+      if (t.status === 'cancelled' || t.status === 'reversed') return;
 
       const qty = Number(t.quantity) || 0;
+      if (qty <= 0) return;
+
+      const isReturnToOwner =
+        t.transfer_level === 'party_to_owner' ||
+        t.destination_party_id === 'owner' ||
+        (t.transfer_type === 'return' && (!t.source_party_id || t.source_party_id === t.destination_party_id));
+
+      // Outflow: Returning to warehouse owner
+      if (isReturnToOwner && (t.source_party_id === partyId || t.destination_party_id === partyId)) {
+        stock -= qty;
+        return;
+      }
+
+      // Outflow from party to another party:
+      if (t.source_party_id === partyId) {
+        stock -= qty;
+        return;
+      }
 
       // Inflow to party:
       if (t.destination_party_id === partyId) {
         if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
           stock += qty;
-        } else if (t.transfer_type === 'return' && t.source_party_id) {
+        } else if (t.transfer_type === 'return' && t.source_party_id && t.source_party_id !== partyId) {
           // Received return from downstream distributor
           stock += qty;
-        } else if (t.transfer_type === 'return' && !t.source_party_id) {
-          // Legacy direct return to owner
-          stock -= qty;
         } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
           stock -= qty;
+        } else if (t.transfer_type === 'adjustment') {
+          stock += qty;
         }
-      }
-
-      // Outflow from party (when source_party_id is this party):
-      if (t.source_party_id === partyId) {
-        stock -= qty;
       }
     });
 
@@ -2551,7 +2563,7 @@ class StorageService {
     quantity: number;
     rate?: number;
     transfer_type: StockTransferType;
-    status?: 'pending' | 'completed' | 'cancelled';
+    status?: 'pending' | 'completed' | 'cancelled' | 'reversed';
     notes?: string;
   }): Promise<StockTransfer> {
     const qty = Number(data.quantity);
@@ -2570,20 +2582,43 @@ class StorageService {
     const totalVal = Math.round(qty * enteredRate * 100) / 100;
     const now = new Date().toISOString();
 
-    // Determine transfer level
+    // Determine normalized transfer level and parties
     let level: StockTransferLevel = data.transfer_level || 'owner_to_party';
-    if (data.source_party_id) {
-      if (data.destination_party_id === 'owner' || !data.destination_party_id) {
-        level = 'party_to_owner';
-      } else {
-        level = 'party_to_party';
-      }
-    } else if (data.transfer_type === 'return') {
-      level = 'party_to_owner';
-    }
+    let destPartyId = data.destination_party_id;
+    let srcPartyId = data.source_party_id;
+    let destStateId = data.destination_state_id;
 
-    // STRICT ATOMIC STOCK VALIDATION & MOVEMENT
-    if (level === 'owner_to_party') {
+    const isReturnToOwner =
+      data.transfer_level === 'party_to_owner' ||
+      destPartyId === 'owner' ||
+      (data.transfer_type === 'return' && (!destPartyId || destPartyId === 'owner' || destPartyId === srcPartyId));
+
+    if (isReturnToOwner) {
+      level = 'party_to_owner';
+      const returningPartyId = srcPartyId || (destPartyId !== 'owner' ? destPartyId : undefined);
+      if (!returningPartyId) {
+        throw new Error('A valid returning party is required for returning stock to the warehouse owner.');
+      }
+      const returningParty = parties.find(p => p.id === returningPartyId);
+      const partyLabel = returningParty?.party_type === 'state_head'
+        ? `State Head (${returningParty.name})`
+        : (returningParty?.name || 'Party');
+
+      const held = await this.getPartyHeldStock(returningPartyId, item.id);
+      if (held < qty) {
+        throw new Error(
+          `Insufficient stock held by ${partyLabel} for "${item.name}". Available: ${held} pieces, Requested: ${qty} pieces.`
+        );
+      }
+
+      // Atomically increase owner warehouse inventory
+      item.current_stock += qty;
+      item.updated_at = now;
+
+      srcPartyId = returningPartyId;
+      destPartyId = 'owner';
+      if (returningParty?.state_id) destStateId = returningParty.state_id;
+    } else if (level === 'owner_to_party') {
       if (data.transfer_type === 'handover' || data.transfer_type === 'issue') {
         if (item.current_stock < qty) {
           throw new Error(
@@ -2594,29 +2629,20 @@ class StorageService {
         item.updated_at = now;
       }
     } else if (level === 'party_to_party') {
-      const sourceParty = parties.find(p => p.id === data.source_party_id);
-      const sourceHeld = await this.getPartyHeldStock(data.source_party_id!, item.id);
+      if (!srcPartyId) {
+        throw new Error('Source party is required for party-to-party transfers.');
+      }
+      const sourceParty = parties.find(p => p.id === srcPartyId);
+      const sourceHeld = await this.getPartyHeldStock(srcPartyId, item.id);
       if (sourceHeld < qty) {
         const partyLabel = sourceParty?.party_type === 'state_head' ? 'State Head' : (sourceParty?.name || 'Sender party');
         throw new Error(
           `Insufficient stock held by ${partyLabel} for "${item.name}". Available: ${sourceHeld} pieces, Requested: ${qty} pieces.`
         );
       }
-      // CRITICAL: Owner warehouse stock item.current_stock is NOT touched!
-    } else if (level === 'party_to_owner') {
-      const returningPartyId = data.source_party_id || data.destination_party_id;
-      const returningParty = parties.find(p => p.id === returningPartyId);
-      const held = await this.getPartyHeldStock(returningPartyId, item.id);
-      if (held < qty) {
-        const partyLabel = returningParty?.party_type === 'state_head' ? 'State Head' : (returningParty?.name || 'Party');
-        throw new Error(
-          `Insufficient stock held by ${partyLabel} for "${item.name}". Available: ${held} pieces, Requested: ${qty} pieces.`
-        );
-      }
-      item.current_stock += qty;
-      item.updated_at = now;
+      // Owner warehouse stock is unaffected in party-to-party movement
     } else if (data.transfer_type === 'settled' || data.transfer_type === 'sale') {
-      const held = await this.getPartyHeldStock(data.destination_party_id, item.id);
+      const held = await this.getPartyHeldStock(destPartyId, item.id);
       if (held < qty) {
         throw new Error(
           `Insufficient stock held by party for "${item.name}". Available: ${held} pieces, Requested: ${qty} pieces.`
@@ -2633,9 +2659,9 @@ class StorageService {
       user_id: userId || undefined,
       reference_no: refNo,
       transfer_date: data.transfer_date || now,
-      destination_state_id: data.destination_state_id,
-      destination_party_id: data.destination_party_id,
-      source_party_id: data.source_party_id || undefined,
+      destination_state_id: destStateId,
+      destination_party_id: destPartyId,
+      source_party_id: srcPartyId || undefined,
       transfer_level: level,
       item_id: item.id,
       item_name: item.name,
@@ -2659,7 +2685,7 @@ class StorageService {
       try {
         const dbPayload: any = {
           id: transferId,
-          destination_party_id: isValidUUID(data.destination_party_id) ? data.destination_party_id : null,
+          destination_party_id: isValidUUID(destPartyId) ? destPartyId : null,
           item_id: isValidUUID(item.id) ? item.id : null,
           item_name: item.name,
           transfer_type: data.transfer_type === 'handover' ? 'issue' : (data.transfer_type === 'settled' ? 'issue' : data.transfer_type),
@@ -2763,44 +2789,237 @@ class StorageService {
     return updated;
   }
 
-  async deleteStockTransfer(id: string): Promise<void> {
+  async deleteStockTransfer(id: string, reason?: string): Promise<{
+    success: boolean;
+    reference_no: string;
+    item_name: string;
+    quantity: number;
+    reversal_ref: string;
+  }> {
     const transfers = await this.getStockTransfers();
     const target = transfers.find(t => t.id === id);
-    if (!target) return;
+    if (!target) throw new Error('Stock transaction not found.');
 
-    // Reverse warehouse stock ONLY if owner custody was affected
-    const isOwnerLevel = target.transfer_level === 'owner_to_party' ||
-      target.transfer_level === 'party_to_owner' ||
-      (!target.source_party_id && (target.transfer_type === 'handover' || target.transfer_type === 'issue' || target.transfer_type === 'return'));
+    // 1. Guard against double-reversal
+    if (target.status === 'cancelled' || target.status === 'reversed') {
+      throw new Error(`Transaction #${target.reference_no || id.slice(0, 8)} has already been reversed or cancelled.`);
+    }
 
-    if (isOwnerLevel) {
-      const items = await this.getItems();
-      const item = items.find(i => i.id === target.item_id);
+    const items = await this.getItems();
+    const item = items.find(i => i.id === target.item_id);
+    const parties = await this.getParties();
+    const now = new Date().toISOString();
+    const reversalRef = 'REV-' + (target.reference_no || id.slice(0, 8));
+
+    // 2. Strict Downstream Dependency & Balance Validations
+    const isOwnerToParty = target.transfer_level === 'owner_to_party' ||
+      (!target.source_party_id && (target.transfer_type === 'handover' || target.transfer_type === 'issue') && target.destination_party_id !== 'owner');
+
+    const isPartyToOwner = target.transfer_level === 'party_to_owner' ||
+      (target.transfer_type === 'return' && (target.destination_party_id === 'owner' || !target.source_party_id || target.source_party_id === target.destination_party_id));
+
+    const isPartyToParty = target.transfer_level === 'party_to_party' ||
+      (target.source_party_id && target.destination_party_id && target.destination_party_id !== 'owner' && target.source_party_id !== target.destination_party_id);
+
+    if (isOwnerToParty) {
+      // Stock was handed over from owner to party.
+      // Reversing this entry will DEDUCT stock from this party.
+      // We must verify the party still holds enough stock!
+      const partyHeld = await this.getPartyHeldStock(target.destination_party_id, target.item_id);
+      if (partyHeld < target.quantity) {
+        const party = parties.find(p => p.id === target.destination_party_id);
+        const partyName = party?.name || 'Party';
+        throw new Error(
+          `Cannot delete transaction #${target.reference_no || id.slice(0, 8)}: ${partyName} only holds ${partyHeld} pcs of "${target.item_name}", but this transaction handed over ${target.quantity} pcs. Downstream stock has already been transferred or sold. Reconcile or reverse downstream movements first.`
+        );
+      }
+      // Reversal restores stock to owner warehouse:
       if (item) {
-        const now = new Date().toISOString();
-        if (target.transfer_type === 'handover' || target.transfer_type === 'issue') {
-          item.current_stock += target.quantity;
-        } else if (target.transfer_type === 'return') {
-          item.current_stock = Math.max(0, item.current_stock - target.quantity);
-        }
+        item.current_stock += target.quantity;
         item.updated_at = now;
-        this.saveToLocal(STORAGE_KEYS.ITEMS, items);
-
-        const client = getSupabaseClient();
-        if (client) {
-          client.from('items').update({ current_stock: item.current_stock, updated_at: now }).eq('id', item.id).catch(() => {});
+      }
+    } else if (isPartyToOwner) {
+      // Stock was returned from party to owner warehouse.
+      // Reversing this return will DEDUCT stock from owner warehouse and restore it to party.
+      // We must verify warehouse has enough stock!
+      if (item && item.current_stock < target.quantity) {
+        throw new Error(
+          `Cannot delete return transaction #${target.reference_no || id.slice(0, 8)}: Owner warehouse only holds ${item.current_stock} pcs of "${target.item_name}", but reversing this return requires deducting ${target.quantity} pcs.`
+        );
+      }
+      if (item) {
+        item.current_stock = Math.max(0, item.current_stock - target.quantity);
+        item.updated_at = now;
+      }
+    } else if (isPartyToParty) {
+      if (target.transfer_type === 'handover' || target.transfer_type === 'issue') {
+        const destHeld = await this.getPartyHeldStock(target.destination_party_id, target.item_id);
+        if (destHeld < target.quantity) {
+          const destParty = parties.find(p => p.id === target.destination_party_id);
+          const destName = destParty?.name || 'Target distributor';
+          throw new Error(
+            `Cannot delete transaction #${target.reference_no || id.slice(0, 8)}: ${destName} only holds ${destHeld} pcs of "${target.item_name}", but this transfer issued ${target.quantity} pcs. Downstream stock has already been transferred or sold.`
+          );
+        }
+      } else if (target.transfer_type === 'return') {
+        const destHeld = await this.getPartyHeldStock(target.destination_party_id, target.item_id);
+        if (destHeld < target.quantity) {
+          const destParty = parties.find(p => p.id === target.destination_party_id);
+          const destName = destParty?.name || 'State Head';
+          throw new Error(
+            `Cannot delete return #${target.reference_no || id.slice(0, 8)}: ${destName} only holds ${destHeld} pcs of "${target.item_name}", but reversing this return requires deducting ${target.quantity} pcs.`
+          );
         }
       }
     }
 
-    const filtered = transfers.filter(t => t.id !== id);
-    this.saveToLocal(STORAGE_KEYS.STOCK_TRANSFERS, filtered);
+    // 3. Persist warehouse item adjustment if changed
+    if (item && (isOwnerToParty || isPartyToOwner)) {
+      this.saveToLocal(STORAGE_KEYS.ITEMS, items);
+      const client = getSupabaseClient();
+      if (client) {
+        client.from('items').update({
+          current_stock: item.current_stock,
+          updated_at: now
+        }).eq('id', item.id).catch(() => {});
+      }
+    }
+
+    // 4. Mark transaction as reversed in audit trail and persist
+    target.status = 'reversed';
+    target.reversal_date = now;
+    target.reversal_ref = reversalRef;
+    target.reversal_reason = reason || 'Deleted and reversed by user';
+    target.updated_at = now;
+
+    this.saveToLocal(STORAGE_KEYS.STOCK_TRANSFERS, transfers);
 
     const client = getSupabaseClient();
     if (client && isValidUUID(id)) {
       client.from('stock_transfers').delete().eq('id', id).catch(() => {});
     }
+
     await this.syncStatesPartiesCloudFallback();
+
+    return {
+      success: true,
+      reference_no: target.reference_no || id.slice(0, 8),
+      item_name: target.item_name,
+      quantity: target.quantity,
+      reversal_ref: reversalRef
+    };
+  }
+
+  async reconcileStockBalances(): Promise<{
+    reconciledItems: Array<{
+      item_id: string;
+      item_name: string;
+      previous_stock: number;
+      reconciled_stock: number;
+      difference: number;
+    }>;
+    isBalanced: boolean;
+    timestamp: string;
+  }> {
+    const items = await this.getItems();
+    const purchases = await this.getPurchases();
+    const sales = await this.getSales();
+    const transfers = await this.getStockTransfers();
+    const now = new Date().toISOString();
+
+    const reconciledItems: Array<{
+      item_id: string;
+      item_name: string;
+      previous_stock: number;
+      reconciled_stock: number;
+      difference: number;
+    }> = [];
+
+    let hasDrift = false;
+
+    for (const item of items) {
+      if (item.is_archived) continue;
+      const opening = Number(item.opening_stock) || 0;
+
+      // Active purchases
+      let purchased = 0;
+      purchases.forEach(p => {
+        if (p.status === 'cancelled') return;
+        p.items?.forEach(line => {
+          if (line.item_id === item.id || line.item_name?.toLowerCase() === item.name.toLowerCase()) {
+            purchased += Number(line.quantity) || 0;
+          }
+        });
+      });
+
+      // Active direct sales (not from party consignment)
+      let directSold = 0;
+      sales.forEach(s => {
+        if (s.status !== 'completed' || s.deduct_from_party_stock) return;
+        s.items?.forEach(line => {
+          if (line.item_id === item.id) {
+            directSold += Number(line.quantity) || 0;
+          }
+        });
+      });
+
+      // Active owner handovers and active returns to owner
+      let ownerHandovers = 0;
+      let partyReturns = 0;
+      transfers.forEach(t => {
+        if (t.item_id !== item.id) return;
+        if (t.status === 'cancelled' || t.status === 'reversed') return;
+
+        const qty = Number(t.quantity) || 0;
+        const isOwnerToParty = t.transfer_level === 'owner_to_party' ||
+          (!t.source_party_id && (t.transfer_type === 'handover' || t.transfer_type === 'issue') && t.destination_party_id !== 'owner');
+        const isPartyToOwner = t.transfer_level === 'party_to_owner' ||
+          (t.transfer_type === 'return' && (t.destination_party_id === 'owner' || !t.source_party_id || t.source_party_id === t.destination_party_id));
+
+        if (isOwnerToParty) {
+          ownerHandovers += qty;
+        } else if (isPartyToOwner) {
+          partyReturns += qty;
+        }
+      });
+
+      const calculatedWarehouseStock = Math.max(0, opening + purchased - directSold - ownerHandovers + partyReturns);
+      const prevStock = Number(item.current_stock) || 0;
+      const diff = calculatedWarehouseStock - prevStock;
+
+      if (diff !== 0) {
+        hasDrift = true;
+        item.current_stock = calculatedWarehouseStock;
+        item.updated_at = now;
+      }
+
+      reconciledItems.push({
+        item_id: item.id,
+        item_name: item.name,
+        previous_stock: prevStock,
+        reconciled_stock: calculatedWarehouseStock,
+        difference: diff
+      });
+    }
+
+    if (hasDrift) {
+      this.saveToLocal(STORAGE_KEYS.ITEMS, items);
+      const client = getSupabaseClient();
+      if (client) {
+        for (const item of items) {
+          await client.from('items').update({
+            current_stock: item.current_stock,
+            updated_at: now
+          }).eq('id', item.id).catch(() => {});
+        }
+      }
+    }
+
+    return {
+      reconciledItems,
+      isBalanced: !hasDrift,
+      timestamp: now
+    };
   }
 
   async getDistributionDashboardStats(filters?: {
@@ -2827,7 +3046,7 @@ class StorageService {
 
     // Filter transfers by date/item/state/party if specified
     const filteredTransfers = transfers.filter(t => {
-      if (t.status === 'cancelled') return false;
+      if (t.status === 'cancelled' || t.status === 'reversed') return false;
       if (filters?.item_id && t.item_id !== filters.item_id) return false;
       if (filters?.state_id && t.destination_state_id !== filters.state_id) return false;
       if (filters?.party_id && t.destination_party_id !== filters.party_id && t.source_party_id !== filters.party_id) return false;
@@ -3025,7 +3244,8 @@ class StorageService {
 
     const transfers = await this.getStockTransfers();
     const partyTransfers = transfers.filter(
-      t => t.destination_party_id === partyId || t.source_party_id === partyId
+      t => (t.status !== 'cancelled' && t.status !== 'reversed') &&
+           (t.destination_party_id === partyId || t.source_party_id === partyId)
     );
 
     const sales = await this.getSales();
@@ -3090,7 +3310,27 @@ class StorageService {
       const isDestination = t.destination_party_id === partyId;
       const isSource = t.source_party_id === partyId;
 
-      if (isDestination) {
+      const isReturnToOwner =
+        t.transfer_level === 'party_to_owner' ||
+        t.destination_party_id === 'owner' ||
+        (t.transfer_type === 'return' && (!t.source_party_id || t.source_party_id === t.destination_party_id));
+
+      if (isReturnToOwner && (isSource || isDestination)) {
+        // Outward return from this party back to warehouse owner
+        entry.returned_qty += qty;
+        let need = qty;
+        let consumedVal = 0;
+        for (const b of entry.batches) {
+          if (need <= 0) break;
+          if (b.remaining_qty > 0) {
+            const take = Math.min(b.remaining_qty, need);
+            b.remaining_qty -= take;
+            need -= take;
+            consumedVal += take * b.rate;
+          }
+        }
+        entry.returned_value += (typeof t.total_value === 'number' && t.total_value > 0 ? t.total_value : consumedVal);
+      } else if (isDestination) {
         if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
           entry.handover_qty += qty;
           entry.handover_value += totalVal;
@@ -3101,7 +3341,7 @@ class StorageService {
             original_qty: qty,
             remaining_qty: qty
           });
-        } else if (t.transfer_type === 'return' && t.source_party_id) {
+        } else if (t.transfer_type === 'return' && t.source_party_id && t.source_party_id !== partyId) {
           // Received returned stock from downstream distributor
           entry.batches.push({
             id: t.id,
@@ -3110,21 +3350,6 @@ class StorageService {
             original_qty: qty,
             remaining_qty: qty
           });
-        } else if (t.transfer_type === 'return' && !t.source_party_id) {
-          // Legacy direct return to owner
-          entry.returned_qty += qty;
-          let need = qty;
-          let consumedVal = 0;
-          for (const b of entry.batches) {
-            if (need <= 0) break;
-            if (b.remaining_qty > 0) {
-              const take = Math.min(b.remaining_qty, need);
-              b.remaining_qty -= take;
-              need -= take;
-              consumedVal += take * b.rate;
-            }
-          }
-          entry.returned_value += (t.total_value && t.total_value > 0 ? t.total_value : consumedVal);
         } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
           entry.sold_settled_qty += qty;
           let need = qty;
@@ -3138,7 +3363,7 @@ class StorageService {
               consumedVal += take * b.rate;
             }
           }
-          entry.sold_settled_value += (t.total_value && t.total_value > 0 ? t.total_value : consumedVal);
+          entry.sold_settled_value += (typeof t.total_value === 'number' && t.total_value > 0 ? t.total_value : consumedVal);
         } else if (t.transfer_type === 'adjustment') {
           if (qty >= 0) {
             entry.batches.push({
@@ -3161,10 +3386,7 @@ class StorageService {
           }
         }
       } else if (isSource) {
-        // Outward transfer from this party
-        if (t.transfer_type === 'return') {
-          entry.returned_qty += qty;
-        }
+        // Outward transfer from this party to downstream distributor
         let need = qty;
         let consumedVal = 0;
         for (const b of entry.batches) {
@@ -3177,7 +3399,8 @@ class StorageService {
           }
         }
         if (t.transfer_type === 'return') {
-          entry.returned_value += (t.total_value && t.total_value > 0 ? t.total_value : consumedVal);
+          entry.returned_qty += qty;
+          entry.returned_value += (typeof t.total_value === 'number' && t.total_value > 0 ? t.total_value : consumedVal);
         }
       }
     }

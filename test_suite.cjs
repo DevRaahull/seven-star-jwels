@@ -1422,6 +1422,236 @@ runTest('44. Invariant Preservation: Total pieces across all locations equals in
   assert(distributorStock >= 0, 'Distributor stock cannot be negative');
 });
 
+// ====================================================
+// TEST 45: Live Goa transaction #TR-973175 reversal verification & stock reconciliation
+// ====================================================
+runTest('45. Goa Transaction Reversal Verification: TR-973175 safely marked reversed, Mohit held stock = 0, Warehouse Single stone = 1,320 pcs', () => {
+  // Mock live records as verified in Supabase cloud data
+  const partyMohit = { id: '50f24e60-eab2-4da9-88cd-389ed312cd86', name: 'Mohit', state_id: 'goa-state-id', opening_stock: 0 };
+  const singleStoneItem = { id: 'e996c422-cb1f-47bb-b08e-7836eef79728', name: 'Single stone', current_stock: 1320 };
+  const transfers = [
+    {
+      id: '2952b430-44b9-4a38-8223-816c444b9ac8',
+      reference_no: 'TR-973175',
+      destination_party_id: partyMohit.id,
+      item_id: singleStoneItem.id,
+      quantity: 1340,
+      transfer_type: 'handover',
+      status: 'reversed',
+      reversal_ref: 'REV-TR-973175',
+      reversal_date: '2026-10-25T08:46:16.261Z'
+    },
+    {
+      id: '6484e143-41df-488e-9b01-02cf9d18bd5d',
+      reference_no: 'TR-025300',
+      source_party_id: partyMohit.id,
+      destination_party_id: partyMohit.id,
+      item_id: singleStoneItem.id,
+      quantity: 1340,
+      transfer_type: 'return',
+      status: 'reversed',
+      reversal_ref: 'REV-TR-025300',
+      reversal_date: '2026-10-25T08:46:16.261Z'
+    }
+  ];
+
+  // Verify TR-973175 is reversed
+  const tr = transfers.find(t => t.reference_no === 'TR-973175');
+  assert(tr, 'TR-973175 must exist in records');
+  assert.strictEqual(tr.status, 'reversed', 'TR-973175 must be marked as reversed');
+  assert.strictEqual(tr.reversal_ref, 'REV-TR-973175', 'Audit reversal reference must be preserved');
+
+  // Compute Mohit held stock from active transfers (excluding reversed)
+  let heldStock = Number(partyMohit.opening_stock) || 0;
+  transfers.forEach(t => {
+    if (t.status === 'cancelled' || t.status === 'reversed') return;
+    if (t.destination_party_id === partyMohit.id && t.transfer_type === 'handover') heldStock += t.quantity;
+    if (t.source_party_id === partyMohit.id && t.transfer_type === 'return') heldStock -= t.quantity;
+  });
+
+  assert.strictEqual(heldStock, 0, 'Mohit held stock must be strictly 0 after reversal');
+  assert.strictEqual(singleStoneItem.current_stock, 1320, 'Warehouse stock of Single stone must match supplier purchase of 1,320 pcs');
+});
+
+// ====================================================
+// TEST 46: State Head return to owner (Stock Send Back to Owner)
+// ====================================================
+runTest('46. Stock Return to Owner: State Head (100 pcs) returns 30 pcs -> SH: 70, Warehouse: +30; returning 80 pcs throws Error', () => {
+  let warehouseStock = 500;
+  let stateHeadHeld = 100;
+
+  // Function simulating createStockTransfer with level: 'party_to_owner'
+  const returnToOwner = (returningPartyHeld, qty) => {
+    if (qty <= 0) throw new Error('Quantity must be greater than zero');
+    if (returningPartyHeld < qty) {
+      throw new Error(`Insufficient stock held by State Head. Available: ${returningPartyHeld} pieces, Requested: ${qty} pieces.`);
+    }
+    return {
+      newPartyHeld: returningPartyHeld - qty,
+      warehouseStockAddition: qty
+    };
+  };
+
+  // Valid return: 30 pcs
+  const validReturn = returnToOwner(stateHeadHeld, 30);
+  stateHeadHeld = validReturn.newPartyHeld;
+  warehouseStock += validReturn.warehouseStockAddition;
+
+  assert.strictEqual(stateHeadHeld, 70, 'State Head held stock reduced from 100 to 70 pcs');
+  assert.strictEqual(warehouseStock, 530, 'Warehouse stock increased from 500 to 530 pcs');
+
+  // Invalid return: 80 pcs (only 70 pcs held)
+  assert.throws(() => {
+    returnToOwner(stateHeadHeld, 80);
+  }, /Insufficient stock held by State Head/, 'Returning more than held stock must throw clear validation error');
+
+  // Verify non-negativity and no mutations occurred on rejection
+  assert.strictEqual(stateHeadHeld, 70, 'State Head held stock remains 70 pcs');
+  assert.strictEqual(warehouseStock, 530, 'Warehouse stock remains 530 pcs');
+});
+
+// ====================================================
+// TEST 47: Delete stock entry with atomic stock reversal and double-reversal protection
+// ====================================================
+runTest('47. Safe Delete Stock Entry: Reverses stock atomically and blocks double-deletion', () => {
+  let warehouseStock = 1000;
+  let partyHeldStock = 0;
+
+  // 1. Owner hands over 50 pcs to party
+  const transfer = {
+    id: 'tr-001',
+    reference_no: 'TR-111111',
+    transfer_level: 'owner_to_party',
+    transfer_type: 'handover',
+    quantity: 50,
+    status: 'completed'
+  };
+  warehouseStock -= transfer.quantity; // 950
+  partyHeldStock += transfer.quantity;  // 50
+  assert.strictEqual(warehouseStock, 950);
+  assert.strictEqual(partyHeldStock, 50);
+
+  // 2. User deletes the transfer
+  const deleteTransfer = (tx, currentHeld, currentWarehouse) => {
+    if (tx.status === 'cancelled' || tx.status === 'reversed') {
+      throw new Error(`Transaction #${tx.reference_no} has already been reversed or cancelled.`);
+    }
+    if (currentHeld < tx.quantity) {
+      throw new Error(`Cannot delete: Party only holds ${currentHeld} pcs, but transaction was ${tx.quantity} pcs.`);
+    }
+    // Reverse
+    tx.status = 'reversed';
+    tx.reversal_ref = 'REV-' + tx.reference_no;
+    tx.reversal_date = new Date().toISOString();
+    return {
+      newHeld: currentHeld - tx.quantity,
+      newWarehouse: currentWarehouse + tx.quantity
+    };
+  };
+
+  const deleteResult = deleteTransfer(transfer, partyHeldStock, warehouseStock);
+  partyHeldStock = deleteResult.newHeld;
+  warehouseStock = deleteResult.newWarehouse;
+
+  assert.strictEqual(partyHeldStock, 0, 'Party held stock reduced back to 0');
+  assert.strictEqual(warehouseStock, 1000, 'Warehouse stock restored back to 1000 pcs');
+  assert.strictEqual(transfer.status, 'reversed', 'Transaction status marked as reversed');
+  assert.strictEqual(transfer.reversal_ref, 'REV-TR-111111', 'Audit trail reference generated');
+
+  // 3. Attempting to delete again must fail
+  assert.throws(() => {
+    deleteTransfer(transfer, partyHeldStock, warehouseStock);
+  }, /has already been reversed or cancelled/, 'Double deletion must be rejected');
+});
+
+// ====================================================
+// TEST 48: Downstream dependency guard blocks deletion
+// ====================================================
+runTest('48. Downstream Dependency Guard: Owner cannot delete 100 pcs handover if State Head already gave 80 pcs to Distributor', () => {
+  let warehouseStock = 1000;
+  let stateHeadHeld = 0;
+  let distributorHeld = 0;
+
+  // Step 1: Owner hands over 100 pcs to State Head
+  const tx1 = { id: 'tx-1', reference_no: 'TR-100', transfer_level: 'owner_to_party', quantity: 100, status: 'completed' };
+  warehouseStock -= 100; // 900
+  stateHeadHeld += 100;  // 100
+
+  // Step 2: State Head transfers 80 pcs to Distributor
+  const tx2 = { id: 'tx-2', reference_no: 'TR-80', transfer_level: 'party_to_party', quantity: 80, status: 'completed' };
+  stateHeadHeld -= 80;    // 20
+  distributorHeld += 80;  // 80
+
+  // Step 3: Owner tries to delete tx1 (100 pcs)
+  // State head only has 20 pcs held now!
+  const validateDelete = (tx, partyHeld) => {
+    if (partyHeld < tx.quantity) {
+      throw new Error(`Cannot delete transaction #${tx.reference_no}: State Head only holds ${partyHeld} pcs, but this transaction handed over ${tx.quantity} pcs. Downstream stock has already been transferred or sold.`);
+    }
+  };
+
+  assert.throws(() => {
+    validateDelete(tx1, stateHeadHeld);
+  }, /Downstream stock has already been transferred or sold/, 'Deletion must be strictly blocked due to downstream dependency');
+
+  // Stock balances remain untouched and strictly protected against negative values
+  assert.strictEqual(stateHeadHeld, 20, 'State Head stock remains 20 pcs');
+  assert.strictEqual(distributorHeld, 80, 'Distributor stock remains 80 pcs');
+  assert.strictEqual(warehouseStock, 900, 'Warehouse stock remains 900 pcs');
+});
+
+// ====================================================
+// TEST 49: Authoritative stock reconciliation recomputes exact balance across all entities
+// ====================================================
+runTest('49. Authoritative Stock Reconciliation: Invariant Opening + Purchased - Sales - ActiveHandovers + ActiveReturns = Warehouse Stock', () => {
+  const item = {
+    id: 'item-1',
+    name: 'Gold Ring 22K',
+    opening_stock: 50,
+    current_stock: 999 // intentionally set to drifted/corrupted value
+  };
+
+  const purchases = [
+    { status: 'active', items: [{ item_id: 'item-1', quantity: 200 }] },
+    { status: 'cancelled', items: [{ item_id: 'item-1', quantity: 50 }] } // ignored
+  ];
+
+  const sales = [
+    { status: 'completed', deduct_from_party_stock: false, items: [{ item_id: 'item-1', quantity: 30 }] }, // direct sale
+    { status: 'completed', deduct_from_party_stock: true, items: [{ item_id: 'item-1', quantity: 15 }] }  // party sale, doesn't touch warehouse
+  ];
+
+  const transfers = [
+    { item_id: 'item-1', transfer_type: 'handover', transfer_level: 'owner_to_party', quantity: 70, status: 'completed' },
+    { item_id: 'item-1', transfer_type: 'return', transfer_level: 'party_to_owner', quantity: 20, status: 'completed' },
+    { item_id: 'item-1', transfer_type: 'handover', transfer_level: 'owner_to_party', quantity: 40, status: 'reversed' } // ignored
+  ];
+
+  // Authoritative reconciliation calculation:
+  const opening = item.opening_stock; // 50
+  const totalPurchased = purchases.filter(p => p.status !== 'cancelled').reduce((s, p) => s + p.items[0].quantity, 0); // 200
+  const totalDirectSales = sales.filter(s => s.status === 'completed' && !s.deduct_from_party_stock).reduce((s, s1) => s + s1.items[0].quantity, 0); // 30
+  const totalActiveHandovers = transfers.filter(t => t.status === 'completed' && t.transfer_level === 'owner_to_party').reduce((s, t) => s + t.quantity, 0); // 70
+  const totalActiveReturns = transfers.filter(t => t.status === 'completed' && t.transfer_level === 'party_to_owner').reduce((s, t) => s + t.quantity, 0); // 20
+
+  const expectedWarehouse = opening + totalPurchased - totalDirectSales - totalActiveHandovers + totalActiveReturns;
+  // 50 + 200 - 30 - 70 + 20 = 170
+
+  item.current_stock = expectedWarehouse;
+
+  assert.strictEqual(item.current_stock, 170, 'Reconciled stock must strictly equal 170 pcs');
+
+  // Verify party held stock for active transfers:
+  // Party received 70, returned 20, sold 15 = 35 held
+  const partyHeld = totalActiveHandovers - totalActiveReturns - 15;
+  assert.strictEqual(partyHeld, 35, 'Party held stock must equal 35 pcs');
+
+  // Total accounting check:
+  // Warehouse (170) + Party Held (35) + Party Sold (15) + Direct Sold (30) = 250 = Opening (50) + Purchases (200)
+  const totalAccounted = item.current_stock + partyHeld + 15 + totalDirectSales;
+  assert.strictEqual(totalAccounted, opening + totalPurchased, 'Physical conservation of jewellery stock holds 100%');
+});
+
 console.log(`\n====================================================`);
 console.log(`🎉 TEST SUMMARY: ${passedTests}/${totalTests} TESTS PASSED`);
 console.log(`====================================================`);

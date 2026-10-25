@@ -173,7 +173,10 @@ export interface StockTransfer {
   rate?: number;
   total_value?: number;
   transfer_type: StockTransferType;
-  status?: 'pending' | 'completed' | 'cancelled';
+  status?: 'pending' | 'completed' | 'cancelled' | 'reversed';
+  reversal_date?: string;
+  reversal_ref?: string;
+  reversal_reason?: string;
   notes?: string;
   created_at: string;
   updated_at?: string;

@@ -35,7 +35,9 @@ import {
   ShieldCheck,
   Filter,
   SlidersHorizontal,
-  Receipt
+  Receipt,
+  AlertTriangle,
+  RefreshCw
 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext';
 import { formatCurrency, formatDate } from '../../lib/formatters';
@@ -57,6 +59,7 @@ export const StatesPartiesView: React.FC = () => {
     createStockTransfer,
     updateStockTransfer,
     deleteStockTransfer,
+    reconcileStockBalances,
     recordPartyPayment,
     getPartyLedger
   } = useAppData();
@@ -166,26 +169,39 @@ export const StatesPartiesView: React.FC = () => {
     }>();
 
     activeParties.forEach(party => {
-      let issued = 0;
+      let issued = Number(party.opening_stock) || 0;
       let returned = 0;
       let soldFromHeld = 0;
 
       stockTransfers.forEach(t => {
-        if (t.status === 'cancelled') return;
+        if (t.status === 'cancelled' || t.status === 'reversed') return;
+
+        const isReturnToOwner =
+          t.transfer_level === 'party_to_owner' ||
+          t.destination_party_id === 'owner' ||
+          (t.transfer_type === 'return' && (!t.source_party_id || t.source_party_id === t.destination_party_id));
+
+        if (isReturnToOwner && (t.source_party_id === party.id || t.destination_party_id === party.id)) {
+          returned += t.quantity;
+          return;
+        }
+
+        if (t.source_party_id === party.id) {
+          returned += t.quantity;
+          return;
+        }
+
         if (t.destination_party_id === party.id) {
           if (t.transfer_type === 'handover' || t.transfer_type === 'issue') {
             issued += t.quantity;
-          } else if (t.transfer_type === 'return' && t.source_party_id) {
+          } else if (t.transfer_type === 'return' && t.source_party_id && t.source_party_id !== party.id) {
             // Downstream return back to this state head
             issued += t.quantity;
-          } else if (t.transfer_type === 'return' && !t.source_party_id) {
-            returned += t.quantity;
           } else if (t.transfer_type === 'settled' || t.transfer_type === 'sale') {
             soldFromHeld += t.quantity;
+          } else if (t.transfer_type === 'adjustment') {
+            issued += t.quantity;
           }
-        }
-        if (t.source_party_id === party.id) {
-          returned += t.quantity;
         }
       });
 
@@ -241,7 +257,7 @@ export const StatesPartiesView: React.FC = () => {
 
     // Filter transfers by date/item/state/party if specified
     const filteredTransfers = stockTransfers.filter(t => {
-      if (t.status === 'cancelled') return false;
+      if (t.status === 'cancelled' || t.status === 'reversed') return false;
       if (dashItemFilter !== 'all' && t.item_id !== dashItemFilter) return false;
       if (dashStateFilter !== 'all' && t.destination_state_id !== dashStateFilter) return false;
       if (dashPartyFilter !== 'all' && t.destination_party_id !== dashPartyFilter && t.source_party_id !== dashPartyFilter) return false;
@@ -571,7 +587,7 @@ export const StatesPartiesView: React.FC = () => {
       return;
     }
 
-    // Determine target party
+    // Determine target party and direction
     let destId = txDestPartyId || selectedPartyId;
     let srcId = txSourcePartyId || undefined;
     let level: StockTransferLevel = 'owner_to_party';
@@ -595,21 +611,30 @@ export const StatesPartiesView: React.FC = () => {
         setErrorMessage('Returning Distributor is required.');
         return;
       }
-    } else if (txDirection === 'state_head_to_owner') {
+    } else if (txDirection === 'state_head_to_owner' || (txDirection === 'direct_party' && typeToUse === 'return')) {
       level = 'party_to_owner';
       typeToUse = 'return';
-      srcId = srcId || destId || undefined;
+      srcId = txSourcePartyId || selectedPartyId || destId;
+      destId = 'owner';
     }
 
-    if (!destId) {
-      setErrorMessage('Target party is required.');
-      return;
-    }
-
-    const party = activeParties.find(p => p.id === destId);
-    if (!party) {
-      setErrorMessage('Selected party not found.');
-      return;
+    let partyRecordForState: PartyRecord | undefined;
+    if (level === 'party_to_owner') {
+      partyRecordForState = activeParties.find(p => p.id === srcId);
+      if (!partyRecordForState) {
+        setErrorMessage('Returning party not found.');
+        return;
+      }
+    } else {
+      if (!destId) {
+        setErrorMessage('Target party is required.');
+        return;
+      }
+      partyRecordForState = activeParties.find(p => p.id === destId);
+      if (!partyRecordForState) {
+        setErrorMessage('Selected target party not found.');
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -630,8 +655,8 @@ export const StatesPartiesView: React.FC = () => {
         await createStockTransfer({
           transfer_date: txDate,
           reference_no: txRefNo.trim() || undefined,
-          destination_state_id: party.state_id,
-          destination_party_id: party.id,
+          destination_state_id: partyRecordForState.state_id,
+          destination_party_id: destId,
           source_party_id: srcId,
           transfer_level: level,
           item_id: txItemId,
@@ -642,11 +667,11 @@ export const StatesPartiesView: React.FC = () => {
           notes: txNotes.trim() || undefined
         });
         setSuccessMessage(
-          typeToUse === 'handover' || typeToUse === 'issue'
-            ? `Handed over ${qty} pcs to ${party.name} (Valued at ₹${(qty * rate).toLocaleString('en-IN')}).`
-            : typeToUse === 'return'
-            ? `Returned ${qty} pcs successfully.`
-            : `Recorded ${qty} pcs ${typeToUse} for ${party.name}.`
+          level === 'party_to_owner' || typeToUse === 'return'
+            ? `Returned ${qty} pcs from ${partyRecordForState.name} back to owner warehouse.`
+            : typeToUse === 'handover' || typeToUse === 'issue'
+            ? `Handed over ${qty} pcs to ${partyRecordForState.name} (Valued at ₹${(qty * rate).toLocaleString('en-IN')}).`
+            : `Recorded ${qty} pcs ${typeToUse} for ${partyRecordForState.name}.`
         );
       }
 
@@ -672,15 +697,41 @@ export const StatesPartiesView: React.FC = () => {
     if (!transferToDelete) return;
     setErrorMessage(null);
     try {
-      await deleteStockTransfer(transferToDelete.id);
-      setSuccessMessage(`Stock transaction #${transferToDelete.reference_no || transferToDelete.id.slice(0, 8)} deleted and inventory reversed.`);
+      const res = await deleteStockTransfer(transferToDelete.id, 'User deleted entry via States & Parties');
+      setSuccessMessage(
+        `✓ Stock transaction #${transferToDelete.reference_no || transferToDelete.id.slice(0, 8)} (${transferToDelete.quantity} pcs of ${transferToDelete.item_name}) safely deleted & reversed [Audit Ref: ${res?.reversal_ref || 'REV'}].`
+      );
       setTransferToDelete(null);
       if (selectedPartyId) {
         await loadPartyLedger(selectedPartyId);
       }
-      setTimeout(() => setSuccessMessage(null), 3500);
+      setTimeout(() => setSuccessMessage(null), 4000);
     } catch (err: any) {
       setErrorMessage(err.message || 'Failed to delete transaction.');
+    }
+  };
+
+  // Authoritative Stock Reconciliation
+  const [isReconciling, setIsReconciling] = useState(false);
+  const handleRunReconciliation = async () => {
+    setIsReconciling(true);
+    setErrorMessage(null);
+    try {
+      const res = await reconcileStockBalances();
+      const updatedCount = res.reconciledItems.filter((i: any) => i.difference !== 0).length;
+      setSuccessMessage(
+        res.isBalanced
+          ? '✓ Stock Reconciliation Verified: All warehouse inventory and party held stocks are 100% physically balanced.'
+          : `✓ Authoritative Stock Reconciliation Complete: Corrected drift across ${updatedCount} items.`
+      );
+      if (selectedPartyId) {
+        await loadPartyLedger(selectedPartyId);
+      }
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Reconciliation failed.');
+    } finally {
+      setIsReconciling(false);
     }
   };
 
@@ -818,6 +869,16 @@ export const StatesPartiesView: React.FC = () => {
 
         {/* Global Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={handleRunReconciliation}
+            disabled={isReconciling}
+            className="flex items-center gap-1.5 px-3 py-2 bg-[#16233B] hover:bg-[#1E2E4A] text-cyan-400 rounded-xl text-xs font-semibold border border-[#1E2B45] transition active:scale-95 disabled:opacity-50"
+            title="Authoritative recomputation of warehouse and party balances from valid persisted transactions"
+          >
+            <RefreshCw size={14} className={isReconciling ? 'animate-spin' : ''} />
+            <span>{isReconciling ? 'Reconciling...' : 'Reconcile Stock'}</span>
+          </button>
+
           {!selectedPartyId && (
             <>
               <button
@@ -3475,36 +3536,129 @@ export const StatesPartiesView: React.FC = () => {
       )}
 
       {/* 7. DELETE STOCK TRANSACTION CONFIRMATION MODAL */}
-      {transferToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-[#111B2E] border border-rose-500/40 rounded-2xl w-full max-w-sm p-6 shadow-2xl space-y-4">
-            <div className="flex items-center gap-2.5 text-rose-400">
-              <AlertCircle size={20} />
-              <h3 className="font-semibold text-sm text-[#F5F3EE]">Delete Stock Transaction?</h3>
-            </div>
-            <p className="text-xs text-[#AAB4C5]">
-              Are you sure you want to delete transaction #{transferToDelete.reference_no || transferToDelete.id.slice(0, 8)}?
-              <span className="block mt-2 text-amber-400">
-                ⚠️ Inventory stock impact ({transferToDelete.quantity} pcs of {transferToDelete.item_name}) will automatically be reversed in warehouse inventory and party ledger.
-              </span>
-            </p>
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                onClick={() => setTransferToDelete(null)}
-                className="px-3 py-1.5 bg-[#16233B] text-[#AAB4C5] hover:text-[#F5F3EE] rounded-lg text-xs"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmDeleteTransfer}
-                className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold shadow"
-              >
-                Confirm Delete & Reverse Stock
-              </button>
+      {transferToDelete && (() => {
+        const isOwnerToParty = transferToDelete.transfer_level === 'owner_to_party' ||
+          (!transferToDelete.source_party_id && (transferToDelete.transfer_type === 'handover' || transferToDelete.transfer_type === 'issue') && transferToDelete.destination_party_id !== 'owner');
+
+        const isPartyToOwner = transferToDelete.transfer_level === 'party_to_owner' ||
+          (transferToDelete.transfer_type === 'return' && (transferToDelete.destination_party_id === 'owner' || !transferToDelete.source_party_id || transferToDelete.source_party_id === transferToDelete.destination_party_id));
+
+        const isPartyToParty = transferToDelete.transfer_level === 'party_to_party' ||
+          (transferToDelete.source_party_id && transferToDelete.destination_party_id && transferToDelete.destination_party_id !== 'owner' && transferToDelete.source_party_id !== transferToDelete.destination_party_id);
+
+        const senderParty = transferToDelete.source_party_id ? activeParties.find(p => p.id === transferToDelete.source_party_id) : null;
+        const receiverParty = transferToDelete.destination_party_id && transferToDelete.destination_party_id !== 'owner'
+          ? activeParties.find(p => p.id === transferToDelete.destination_party_id)
+          : null;
+
+        const senderName = isOwnerToParty ? 'Central Warehouse (Owner)' : (senderParty?.name || 'Sender Party');
+        const receiverName = isPartyToOwner ? 'Central Warehouse (Owner)' : (receiverParty?.name || 'Receiver Party');
+
+        // Check if receiving party has enough stock to reverse
+        let dependencyError: string | null = null;
+        if (isOwnerToParty && receiverParty) {
+          const held = partySummaries.get(receiverParty.id)?.heldStock || 0;
+          if (held < transferToDelete.quantity) {
+            dependencyError = `Cannot delete: ${receiverParty.name} currently holds ${held} pcs of this item, but this entry issued ${transferToDelete.quantity} pcs. Stock has already been transferred downstream or settled.`;
+          }
+        } else if (isPartyToParty && receiverParty && (transferToDelete.transfer_type === 'handover' || transferToDelete.transfer_type === 'issue')) {
+          const held = partySummaries.get(receiverParty.id)?.heldStock || 0;
+          if (held < transferToDelete.quantity) {
+            dependencyError = `Cannot delete: ${receiverParty.name} currently holds ${held} pcs, but this transfer issued ${transferToDelete.quantity} pcs. Stock has already been transferred downstream or settled.`;
+          }
+        } else if (isPartyToOwner) {
+          const it = items.find(i => i.id === transferToDelete.item_id);
+          const currentWarehouse = it ? it.current_stock : 0;
+          if (currentWarehouse < transferToDelete.quantity) {
+            dependencyError = `Cannot delete: Warehouse only holds ${currentWarehouse} pcs, but reversing this return requires deducting ${transferToDelete.quantity} pcs.`;
+          }
+        }
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+            <div className="bg-[#111B2E] border border-rose-500/40 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+              <div className="flex items-center gap-2.5 text-rose-400">
+                <AlertCircle size={22} />
+                <h3 className="font-semibold text-base text-[#F5F3EE]">Delete Stock Transaction?</h3>
+              </div>
+
+              {/* Transaction Metadata Card */}
+              <div className="bg-[#0B1220] border border-[#1E2B45] rounded-xl p-3.5 space-y-2 text-xs">
+                <div className="flex justify-between items-center pb-2 border-b border-[#1E2B45]">
+                  <span className="text-[#AAB4C5]">Reference:</span>
+                  <span className="font-bold text-[#F5F3EE] font-mono">#{transferToDelete.reference_no || transferToDelete.id.slice(0, 8)}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-[#AAB4C5]">Date:</span>
+                  <span className="text-[#F5F3EE]">{transferToDelete.transfer_date ? new Date(transferToDelete.transfer_date).toLocaleDateString('en-IN') : 'N/A'}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-[#AAB4C5]">Type:</span>
+                  <span className="capitalize font-semibold text-[#D6B36A]">{transferToDelete.transfer_type}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-[#AAB4C5]">Origin & Target:</span>
+                  <span className="text-[#F5F3EE] text-right font-medium">{senderName} → {receiverName}</span>
+                </div>
+                <div className="flex justify-between items-center pt-2 border-t border-[#1E2B45]">
+                  <span className="text-[#AAB4C5]">Item & Qty:</span>
+                  <span className="font-bold text-amber-300">{transferToDelete.quantity} pcs × {transferToDelete.item_name}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-[#AAB4C5]">Valuation:</span>
+                  <span className="text-[#F5F3EE]">₹{((transferToDelete.quantity || 0) * (transferToDelete.rate || 0)).toLocaleString('en-IN')} (@ ₹{transferToDelete.rate || 0}/pc)</span>
+                </div>
+              </div>
+
+              {/* Explicit Stock Reversal Impact Warning */}
+              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs space-y-1">
+                <div className="font-bold flex items-center gap-1.5">
+                  <AlertTriangle size={14} className="text-amber-400 shrink-0" />
+                  <span>Expected Stock Impact on Reversal:</span>
+                </div>
+                <p className="text-[11px] leading-relaxed text-[#AAB4C5]">
+                  {isOwnerToParty && (
+                    <>Warehouse inventory will <strong className="text-emerald-400 font-bold">INCREASE by +{transferToDelete.quantity} pcs</strong>, and {receiverName}'s held stock will <strong className="text-rose-400 font-bold">DECREASE by -{transferToDelete.quantity} pcs</strong>.</>
+                  )}
+                  {isPartyToOwner && (
+                    <>Warehouse inventory will <strong className="text-rose-400 font-bold">DECREASE by -{transferToDelete.quantity} pcs</strong>, and {senderName}'s held stock will <strong className="text-emerald-400 font-bold">INCREASE by +{transferToDelete.quantity} pcs</strong>.</>
+                  )}
+                  {isPartyToParty && (
+                    <>{senderName}'s held stock will <strong className="text-emerald-400 font-bold">INCREASE by +{transferToDelete.quantity} pcs</strong>, and {receiverName}'s held stock will <strong className="text-rose-400 font-bold">DECREASE by -{transferToDelete.quantity} pcs</strong>.</>
+                  )}
+                </p>
+              </div>
+
+              {/* Dependency guard error */}
+              {dependencyError && (
+                <div className="p-3 bg-rose-500/15 border border-rose-500/40 rounded-xl text-rose-300 text-xs flex items-start gap-2">
+                  <AlertCircle size={16} className="text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="block font-bold">Deletion Blocked (Dependency Guard)</strong>
+                    <span className="text-[11px]">{dependencyError}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  onClick={() => setTransferToDelete(null)}
+                  className="px-3 py-1.5 bg-[#16233B] text-[#AAB4C5] hover:text-[#F5F3EE] rounded-lg text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={!!dependencyError}
+                  onClick={handleConfirmDeleteTransfer}
+                  className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold shadow"
+                >
+                  Confirm Delete & Reverse Stock
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

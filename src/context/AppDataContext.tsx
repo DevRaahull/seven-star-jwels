@@ -90,10 +90,21 @@ interface AppDataContextType {
     quantity?: number;
     rate?: number;
     transfer_type?: StockTransferType;
-    status?: 'pending' | 'completed' | 'cancelled';
+    status?: 'pending' | 'completed' | 'cancelled' | 'reversed';
     notes?: string;
   }) => Promise<StockTransfer>;
-  deleteStockTransfer: (id: string) => Promise<void>;
+  deleteStockTransfer: (id: string, reason?: string) => Promise<any>;
+  reconcileStockBalances: () => Promise<{
+    reconciledItems: Array<{
+      item_id: string;
+      item_name: string;
+      previous_stock: number;
+      reconciled_stock: number;
+      difference: number;
+    }>;
+    isBalanced: boolean;
+    timestamp: string;
+  }>;
   recordPartyPayment: (data: {
     party_id: string;
     payment_date?: string;
@@ -519,9 +530,16 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return updated;
   };
 
-  const deleteStockTransfer = async (id: string) => {
-    await storage.deleteStockTransfer(id);
+  const deleteStockTransfer = async (id: string, reason?: string) => {
+    const res = await storage.deleteStockTransfer(id, reason);
     await refreshData();
+    return res;
+  };
+
+  const reconcileStockBalances = async () => {
+    const res = await storage.reconcileStockBalances();
+    await refreshData();
+    return res;
   };
 
   const recordPartyPayment = async (data: {
@@ -590,6 +608,7 @@ export const AppDataProvider: React.FC<{ children: React.ReactNode }> = ({ child
         createStockTransfer,
         updateStockTransfer,
         deleteStockTransfer,
+        reconcileStockBalances,
         recordPartyPayment,
         getPartyLedger,
         getPartyHeldStock,
